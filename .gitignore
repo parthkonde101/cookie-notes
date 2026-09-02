@@ -1,0 +1,41 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+
+# production
+/build
+
+# private note storage (never commit uploaded content)
+/.private-storage
+/storage
+
+# environment — never commit real secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# generated prisma client (recreated by `npm install` / `prisma generate`)
+/src/generated
+
+# scratch folder used when retiring files on machines that cannot delete
+/_to_delete
+
+# misc
+.DS_Store
+*.pem
+/coverage
+.vercel
+*.tsbuildinfo
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*

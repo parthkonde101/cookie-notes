@@ -1,0 +1,248 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Cookie Notes — cookie-brown dark theme.
+ *
+ * The product is dark-first. Cookie brown (a baked golden-caramel, #d29f60) is
+ * the accent used for primary actions, active states and emphasis; it is
+ * deliberately *not* spread across every surface. Backgrounds stay a warm
+ * near-black with a brown cast, cards sit a shade above them, and typography
+ * carries the hierarchy.
+ *
+ * The accent is a light, warm hue, so primary surfaces pair it with near-black
+ * brown text rather than white — that lands at ~7:1 contrast instead of the
+ * ~2.4:1 white would give, and it is what keeps it reading as baked cookie
+ * rather than as mud.
+ *
+ * Measured against the dark background (#0f0d0a): primary 8.2:1, foreground
+ * 17.4:1, muted foreground 7.9:1, warning 14.3:1, success 7.6:1.
+ *
+ * A light theme is kept as a fallback for anyone who forces it, but everything
+ * is designed and reviewed against the dark palette.
+ */
+
+@layer base {
+  :root {
+    /*
+     * Tells the browser which UA palette to use for native controls — select
+     * menus, date pickers, scrollbars. Without it a <select> renders with the
+     * light UA background even on a dark page.
+     */
+    color-scheme: light;
+
+    /* Light fallback */
+    --background: 36 40% 98%;
+    --foreground: 28 16% 10%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 28 16% 10%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 28 16% 10%;
+
+    /* Deep baked brown — dark enough to carry white text at ~6.3:1. */
+    --primary: 28 60% 34%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 32 20% 94%;
+    --secondary-foreground: 28 16% 18%;
+
+    --muted: 32 18% 95%;
+    --muted-foreground: 30 10% 40%;
+
+    --accent: 33 70% 93%;
+    --accent-foreground: 28 60% 28%;
+
+    --destructive: 354 72% 44%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 152 52% 30%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 34%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 32 18% 87%;
+    --input: 32 18% 87%;
+    --ring: 28 60% 34%;
+
+    --radius: 0.6rem;
+
+    --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
+      Arial, 'Noto Sans', sans-serif;
+  }
+
+  .dark {
+    color-scheme: dark;
+
+    /* ---- The real theme ------------------------------------------------- */
+
+    /* Warm near-black with a brown cast, so the accent sits naturally on it. */
+    --background: 28 18% 5%;
+    --foreground: 30 14% 95%;
+
+    /* Roasted-cocoa surfaces, one step above the page. */
+    --card: 28 15% 8%;
+    --card-foreground: 30 14% 95%;
+
+    --popover: 28 14% 10%;
+    --popover-foreground: 30 14% 95%;
+
+    /* Cookie brown. Paired with near-black brown text — ~7:1, and it stays warm. */
+    --primary: 33 56% 60%;
+    --primary-foreground: 28 45% 11%;
+
+    --secondary: 28 12% 15%;
+    --secondary-foreground: 30 12% 92%;
+
+    --muted: 28 11% 13%;
+    --muted-foreground: 30 10% 64%;
+
+    /* Tinted surface for selected rows and quiet emphasis. */
+    --accent: 30 38% 18%;
+    --accent-foreground: 33 80% 82%;
+
+    /* Cooler and far more saturated than the accent, so "delete" never reads
+       as "primary" — the two are 39° apart in hue. */
+    --destructive: 354 74% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 152 52% 47%;
+    --success-foreground: 150 60% 7%;
+
+    /* A vivid lemon yellow: the accent is a muted brown at S 56%, so the gap in
+       saturation and lightness keeps the two apart even at close hues. */
+    --warning: 52 96% 62%;
+    --warning-foreground: 45 80% 9%;
+
+    --border: 28 11% 17%;
+    --input: 28 11% 21%;
+    --ring: 33 56% 60%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    text-rendering: optimizeLegibility;
+  }
+
+  /* One focus treatment everywhere, in the accent colour. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  ::selection {
+    @apply bg-primary/30 text-foreground;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--primary) / 0.45);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  .surface {
+    @apply rounded-lg border border-border bg-card;
+  }
+
+  /* Cards that respond to the cursor with a warm edge rather than a colour wash. */
+  .surface-interactive {
+    @apply rounded-lg border border-border bg-card transition-[border-color,background-color,transform] duration-150;
+  }
+  .surface-interactive:hover {
+    @apply border-primary/45 bg-card/80;
+  }
+
+  .stat-value {
+    @apply text-2xl font-semibold tracking-tight tabular-nums sm:text-3xl;
+  }
+
+  /* A single restrained glow, used only behind hero areas. */
+  .hero-glow {
+    background-image: radial-gradient(
+      58% 100% at 50% 0%,
+      hsl(var(--primary) / 0.18),
+      transparent 70%
+    );
+  }
+
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-muted;
+  }
+  .skeleton::after {
+    content: '';
+    @apply absolute inset-0 -translate-x-full;
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      hsl(var(--foreground) / 0.06),
+      transparent
+    );
+    animation: shimmer 1.6s infinite;
+  }
+
+  @keyframes shimmer {
+    100% {
+      transform: translateX(100%);
+    }
+  }
+}
+
+@layer utilities {
+  /*
+   * Content-protection helpers for the note reader. These raise the effort
+   * required to copy content; they are not a guarantee — see the README.
+   */
+  .no-select {
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  .no-drag {
+    -webkit-user-drag: none;
+    user-drag: none;
+  }
+}
+
+@media print {
+  .print-hidden,
+  .protected-content {
+    display: none !important;
+  }
+  .print-notice {
+    display: block !important;
+    padding: 4rem 2rem;
+    font-family: var(--font-sans);
+    color: #111;
+    text-align: center;
+  }
+}

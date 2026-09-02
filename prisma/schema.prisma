@@ -1,0 +1,551 @@
+// ScholarVault — database schema
+//
+// Design notes
+// ------------
+// * Entitlements are the single source of truth for "can this user open this note".
+//   They are scoped (NOTE / UNIT / SUBJECT / SEMESTER / ALL) so an admin can grant
+//   broadly today and a payment provider can grant the exact same rows tomorrow.
+//   `Entitlement.orderId` already points at the (currently unused) Order table, so
+//   adding checkout later means writing Orders and reusing the existing grant code.
+// * Sessions are database-backed and store only a SHA-256 hash of the session token,
+//   which makes "one active session per account", remote termination and idle expiry
+//   enforceable server side.
+// * ActivityEvent is a generic append-only event stream. Analytics are computed from
+//   it rather than from counters sprinkled through the app.
+// * AuditLog records privileged actions only (who did what to whom).
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  runtime             = "nodejs"
+  moduleFormat        = "cjs"
+  importFileExtension = ""
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  STUDENT
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+  DELETED
+}
+
+enum SessionStatus {
+  ACTIVE
+  EXPIRED
+  LOGGED_OUT
+  SUPERSEDED
+  TERMINATED
+}
+
+enum NoteStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+/// FREE  -> any signed-in, active student may open the note (used while the
+///          platform is free, and for sample/preview material later).
+/// RESTRICTED -> an explicit entitlement is required.
+enum NoteVisibility {
+  FREE
+  RESTRICTED
+}
+
+enum EntitlementScope {
+  ALL
+  SEMESTER
+  SUBJECT
+  UNIT
+  NOTE
+}
+
+enum EntitlementSource {
+  ADMIN_GRANT
+  PURCHASE
+  PROMO
+  SIGNUP_BONUS
+}
+
+enum OrderStatus {
+  CREATED
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  CANCELLED
+}
+
+enum EventType {
+  // authentication
+  USER_REGISTERED
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGIN_BLOCKED
+  LOGOUT
+  SESSION_CREATED
+  SESSION_TERMINATED
+  SESSION_EXPIRED
+  PASSWORD_RESET_REQUESTED
+  PASSWORD_RESET_COMPLETED
+  // content
+  NOTE_OPENED
+  NOTE_CLOSED
+  NOTE_PAGE_VIEWED
+  SUBJECT_OPENED
+  SEARCH_PERFORMED
+  CATALOG_VIEWED
+  DASHBOARD_VIEWED
+  // protection
+  SUSPICIOUS_ACTIVITY
+  // account
+  ACCOUNT_CREATED
+  ACCOUNT_DISABLED
+  ACCOUNT_ENABLED
+  ACCOUNT_DELETED
+  // admin / content management
+  NOTE_UPLOADED
+  NOTE_UPDATED
+  NOTE_REPLACED
+  NOTE_DELETED
+  ACCESS_GRANTED
+  ACCESS_REVOKED
+  USER_MODIFIED
+  CATALOG_MODIFIED
+}
+
+enum AuditAction {
+  ADMIN_LOGIN
+  USER_CREATED
+  USER_UPDATED
+  USER_DISABLED
+  USER_ENABLED
+  USER_DELETED
+  USER_PASSWORD_RESET
+  SESSION_TERMINATED
+  NOTE_UPLOADED
+  NOTE_UPDATED
+  NOTE_REPLACED
+  NOTE_DELETED
+  NOTE_PUBLISHED
+  NOTE_ARCHIVED
+  ACCESS_GRANTED
+  ACCESS_REVOKED
+  SEMESTER_CREATED
+  SEMESTER_UPDATED
+  SEMESTER_DELETED
+  SUBJECT_CREATED
+  SUBJECT_UPDATED
+  SUBJECT_DELETED
+  UNIT_CREATED
+  UNIT_UPDATED
+  UNIT_DELETED
+  TOPIC_CREATED
+  TOPIC_UPDATED
+  TOPIC_DELETED
+  CONFIG_CHANGED
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  name         String
+  role         Role       @default(STUDENT)
+  status       UserStatus @default(ACTIVE)
+
+  // Light-weight profile data, useful for understanding the customer base.
+  college  String?
+  program  String?
+  semester Int?
+
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+  lastLoginAt      DateTime?
+  lastSeenAt       DateTime?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  disabledAt  DateTime?
+  deletedAt   DateTime?
+  createdById String?
+
+  sessions            Session[]
+  entitlements        Entitlement[]        @relation("EntitlementUser")
+  grantedEntitlements Entitlement[]        @relation("EntitlementGrantedBy")
+  events              ActivityEvent[]
+  auditLogs           AuditLog[]           @relation("AuditActor")
+  uploadedNotes       Note[]               @relation("NoteUploader")
+  noteVersions        NoteVersion[]        @relation("NoteVersionAuthor")
+  noteViews           NoteView[]
+  passwordResets      PasswordResetToken[]
+  orders              Order[]
+
+  @@index([role, status])
+  @@index([createdAt])
+  @@index([lastSeenAt])
+  @@map("users")
+}
+
+model Session {
+  id        String        @id @default(cuid())
+  userId    String
+  tokenHash String        @unique
+  status    SessionStatus @default(ACTIVE)
+
+  ipAddress String?
+  userAgent String?
+  device    String?
+  browser   String?
+  os        String?
+
+  createdAt      DateTime  @default(now())
+  lastActivityAt DateTime  @default(now())
+  expiresAt      DateTime
+  endedAt        DateTime?
+  endedReason    String?
+
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events    ActivityEvent[]
+  noteViews NoteView[]
+
+  @@index([userId, status])
+  @@index([status, lastActivityAt])
+  @@index([createdAt])
+  @@map("sessions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  ipAddress String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
+}
+
+/// Generic fixed-window rate limiter. Database backed so it also works on
+/// serverless platforms where in-process counters are useless.
+model RateLimit {
+  key         String   @id
+  count       Int      @default(0)
+  windowStart DateTime @default(now())
+  expiresAt   DateTime
+
+  @@index([expiresAt])
+  @@map("rate_limits")
+}
+
+/// Small key/value store for runtime configuration. Changes are audit logged.
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@map("settings")
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Semester {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  position    Int      @default(0)
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  subjects Subject[]
+
+  @@index([isArchived, position])
+  @@map("semesters")
+}
+
+model Subject {
+  id          String   @id @default(cuid())
+  semesterId  String
+  name        String
+  slug        String   @unique
+  code        String?
+  description String?
+  color       String?
+  position    Int      @default(0)
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  semester Semester @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  units    Unit[]
+  notes    Note[]
+
+  @@unique([semesterId, name])
+  @@index([semesterId, isArchived, position])
+  @@map("subjects")
+}
+
+model Unit {
+  id          String   @id @default(cuid())
+  subjectId   String
+  name        String
+  description String?
+  position    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  topics  Topic[]
+  notes   Note[]
+
+  @@unique([subjectId, name])
+  @@index([subjectId, position])
+  @@map("units")
+}
+
+model Topic {
+  id        String   @id @default(cuid())
+  unitId    String
+  name      String
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  unit  Unit   @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  notes Note[]
+
+  @@unique([unitId, name])
+  @@index([unitId, position])
+  @@map("topics")
+}
+
+// ---------------------------------------------------------------------------
+// Notes
+// ---------------------------------------------------------------------------
+
+model Note {
+  id          String         @id @default(cuid())
+  title       String
+  description String?
+  subjectId   String
+  unitId      String?
+  topicId     String?
+  status      NoteStatus     @default(PUBLISHED)
+  visibility  NoteVisibility @default(RESTRICTED)
+
+  // Storage: `storageKey` is an opaque key inside private storage. It is never
+  // sent to the browser.
+  storageKey   String
+  fileName     String
+  fileSize     Int
+  mimeType     String  @default("application/pdf")
+  checksum     String?
+  pageCount    Int?
+  version      Int     @default(1)
+
+  /// List price in the smallest currency unit (paise). 0 means the note is not
+  /// individually priced. Nothing charges against this yet — it drives what the
+  /// catalogue shows, so the paid model is visible before payments exist.
+  priceMinor   Int     @default(0)
+
+  viewCount    Int       @default(0)
+  lastViewedAt DateTime?
+
+  uploadedById String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  publishedAt  DateTime?
+  archivedAt   DateTime?
+
+  subject      Subject         @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  unit         Unit?           @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  topic        Topic?          @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  uploadedBy   User?           @relation("NoteUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  versions     NoteVersion[]
+  entitlements Entitlement[]
+  views        NoteView[]
+  events       ActivityEvent[]
+
+  @@index([subjectId, status])
+  @@index([unitId])
+  @@index([status, visibility])
+  @@index([createdAt])
+  @@index([viewCount])
+  @@map("notes")
+}
+
+/// Previous files kept when a note is replaced, so an upload mistake is recoverable.
+model NoteVersion {
+  id          String   @id @default(cuid())
+  noteId      String
+  version     Int
+  storageKey  String
+  fileName    String
+  fileSize    Int
+  checksum    String?
+  createdAt   DateTime @default(now())
+  createdById String?
+
+  note      Note  @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  createdBy User? @relation("NoteVersionAuthor", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([noteId, version])
+  @@map("note_versions")
+}
+
+// ---------------------------------------------------------------------------
+// Access control
+// ---------------------------------------------------------------------------
+
+/// One row = "this user may read everything under this target".
+/// `targetKey` is a denormalised "SCOPE:id" string that gives us a real unique
+/// constraint (Postgres treats NULLs as distinct, so a composite unique across
+/// nullable FKs would not actually prevent duplicates).
+model Entitlement {
+  id         String            @id @default(cuid())
+  userId     String
+  scope      EntitlementScope
+  targetKey  String
+  source     EntitlementSource @default(ADMIN_GRANT)
+
+  semesterId String?
+  subjectId  String?
+  unitId     String?
+  noteId     String?
+
+  grantedById String?
+  orderId     String?
+  note        String?
+
+  grantedAt DateTime  @default(now())
+  expiresAt DateTime?
+
+  user      User  @relation("EntitlementUser", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy User? @relation("EntitlementGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+  noteRef   Note? @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  order     Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, targetKey])
+  @@index([userId, expiresAt])
+  @@index([scope, targetKey])
+  @@map("entitlements")
+}
+
+/// Not used by the MVP. Present so that adding a payment provider later is a
+/// matter of writing rows here and calling the existing grant helper.
+model Order {
+  id                String      @id @default(cuid())
+  userId            String
+  status            OrderStatus @default(CREATED)
+  amountMinor       Int         @default(0)
+  currency          String      @default("INR")
+  provider          String?
+  providerOrderId   String?
+  providerPaymentId String?
+  metadata          Json?
+  createdAt         DateTime    @default(now())
+  paidAt            DateTime?
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entitlements Entitlement[]
+
+  @@index([userId, status])
+  @@map("orders")
+}
+
+// ---------------------------------------------------------------------------
+// Analytics & audit
+// ---------------------------------------------------------------------------
+
+model ActivityEvent {
+  id        String    @id @default(cuid())
+  type      EventType
+  userId    String?
+  sessionId String?
+  noteId    String?
+  subjectId String?
+  ipAddress String?
+  userAgent String?
+  metadata  Json?
+  createdAt DateTime  @default(now())
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  note    Note?    @relation(fields: [noteId], references: [id], onDelete: SetNull)
+
+  @@index([type, createdAt])
+  @@index([userId, createdAt])
+  @@index([noteId, createdAt])
+  @@index([createdAt])
+  @@map("activity_events")
+}
+
+/// One row per note reading session — powers "continue studying", average
+/// reading time and per-note engagement.
+model NoteView {
+  id         String    @id @default(cuid())
+  noteId     String
+  userId     String
+  sessionId  String?
+  startedAt  DateTime  @default(now())
+  endedAt    DateTime?
+  durationMs Int       @default(0)
+  lastPage   Int       @default(1)
+  maxPage    Int       @default(1)
+  pageCount  Int?
+
+  note    Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, startedAt])
+  @@index([noteId, startedAt])
+  @@index([userId, noteId, startedAt])
+  @@map("note_views")
+}
+
+model AuditLog {
+  id          String      @id @default(cuid())
+  actorId     String?
+  actorEmail  String?
+  action      AuditAction
+  targetType  String?
+  targetId    String?
+  targetLabel String?
+  metadata    Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime    @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
