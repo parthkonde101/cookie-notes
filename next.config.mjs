@@ -1,7 +1,28 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * This project's own directory.
+ *
+ * Next.js infers a "workspace root" by walking up looking for lockfiles. If
+ * there is an unrelated package-lock.json in a parent directory (a home folder
+ * with its own project in it, say), Next finds two lockfiles, warns, and may
+ * pick the wrong root — which makes standalone output trace files from outside
+ * this project.
+ *
+ * Deriving the root from this file's own location pins it correctly on every
+ * machine: the developer's laptop, CI and the production host alike. Hardcoding
+ * an absolute path would fix one machine and break the rest.
+ */
+const projectRoot = path.dirname(fileURLToPath(import.meta.url));
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+
+  // Never look above this directory for a lockfile or for files to trace.
+  outputFileTracingRoot: projectRoot,
 
   // The Prisma client and the pg driver are Node-only.
   serverExternalPackages: ['@prisma/client', '@prisma/adapter-pg', 'pg', 'bcryptjs'],
