@@ -12,7 +12,8 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/feedback';
-import { drawWatermark, watermarkCaption, type WatermarkIdentity } from '@/components/notes/watermark';
+import { PdfPage } from '@/components/notes/pdf-page';
+import { watermarkCaption, type WatermarkIdentity } from '@/components/notes/watermark';
 import { cn } from '@/lib/utils';
 
 interface ViewerProps {
@@ -41,23 +42,48 @@ type Status = 'loading' | 'ready' | 'error';
  * Pages always render to fit the available width; the browser's own zoom is
  * left to do the rest, so the toolbar carries page navigation only.
  *
+ * Each page owns its canvas and its render lifecycle (see `PdfPage`). This
+ * component is responsible for the three things that must be coordinated
+ * across pages: which pages are near enough to the viewport to paint, how wide
+ * they should paint, and — critically — not destroying the PDF document while
+ * any page is still rendering into it.
+ *
  * See the README for what this does and does not protect against.
  */
 export function NoteViewer({ noteId, title, subtitle, backHref }: ViewerProps) {
   const [status, setStatus] = useState<Status>('loading');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [doc, setDoc] = useState<import('pdfjs-dist').PDFDocumentProxy | null>(null);
   const [pageCount, setPageCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
+  const [visiblePages, setVisiblePages] = useState<ReadonlySet<number>>(() => new Set([1]));
+  const [pageWidth, setPageWidth] = useState(0);
   const [obscured, setObscured] = useState(false);
   const [identity, setIdentity] = useState<WatermarkIdentity | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const pdfRef = useRef<import('pdfjs-dist').PDFDocumentProxy | null>(null);
   const viewIdRef = useRef<string | null>(null);
-  const renderedRef = useRef(new Set<number>());
   const activeMsRef = useRef(0);
   const lastTickRef = useRef(Date.now());
   const maxPageRef = useRef(1);
+
+  /**
+   * Every render task currently painting a page of this document.
+   *
+   * pdf.js forbids tearing a document down while it is still rendering, and a
+   * destroyed document makes in-flight renders fail in ways that leave a blank
+   * canvas behind. Pages register here so teardown can cancel them and wait.
+   */
+  const tasksRef = useRef(new Set<import('pdfjs-dist').RenderTask>());
+
+  // Stable for the life of the component, so it never re-triggers a page's
+  // render effect.
+  const registerTask = useCallback((task: import('pdfjs-dist').RenderTask) => {
+    tasksRef.current.add(task);
+    return () => {
+      tasksRef.current.delete(task);
+    };
+  }, []);
 
   // --- telemetry -----------------------------------------------------------
 
@@ -90,6 +116,8 @@ export function NoteViewer({ noteId, title, subtitle, backHref }: ViewerProps) {
 
   useEffect(() => {
     let cancelled = false;
+    let loaded: import('pdfjs-dist').PDFDocumentProxy | null = null;
+    const tasks = tasksRef.current;
 
     async function load() {
       try {
@@ -130,21 +158,22 @@ export function NoteViewer({ noteId, title, subtitle, backHref }: ViewerProps) {
         const pdfjs = await import('pdfjs-dist');
         pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.mjs';
 
-        const doc = await pdfjs.getDocument({
+        const document_ = await pdfjs.getDocument({
           data: new Uint8Array(buffer),
           isEvalSupported: false,
           disableAutoFetch: true,
         }).promise;
 
         if (cancelled) {
-          void doc.destroy();
+          void document_.destroy();
           return;
         }
 
-        pdfRef.current = doc;
-        setPageCount(doc.numPages);
+        loaded = document_;
+        setDoc(document_);
+        setPageCount(document_.numPages);
         setStatus('ready');
-        report({ type: 'heartbeat', pageCount: doc.numPages, page: 1 });
+        report({ type: 'heartbeat', pageCount: document_.numPages, page: 1 });
       } catch (error) {
         if (cancelled) return;
         setErrorMessage(error instanceof Error ? error.message : 'Something went wrong.');
@@ -156,88 +185,91 @@ export function NoteViewer({ noteId, title, subtitle, backHref }: ViewerProps) {
 
     return () => {
       cancelled = true;
-      void pdfRef.current?.destroy();
-      pdfRef.current = null;
+
+      // Tear the document down only once nothing is painting into it. Each page
+      // also cancels its own task on unmount; this is the backstop that makes
+      // the ordering explicit and waits for the cancellations to settle.
+      const pending = [...tasks];
+      tasks.clear();
+      for (const task of pending) task.cancel();
+
+      const settled = Promise.all(pending.map((task) => task.promise.catch(() => undefined)));
+      void settled.then(() => loaded?.destroy());
     };
   }, [noteId, report]);
 
-  // --- page rendering ------------------------------------------------------
+  // --- how wide should a page paint ----------------------------------------
 
-  const renderPage = useCallback(
-    async (pageNumber: number) => {
-      const doc = pdfRef.current;
-      if (!doc || !identity) return;
-      if (renderedRef.current.has(pageNumber)) return;
-
-      const canvas = containerRef.current?.querySelector<HTMLCanvasElement>(
-        `canvas[data-page="${pageNumber}"]`,
-      );
-      if (!canvas) return;
-
-      const page = await doc.getPage(pageNumber);
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const container = containerRef.current;
-      const available = Math.min((container?.clientWidth ?? 900) - 24, 1100);
-      const base = page.getViewport({ scale: 1 });
-      const fitScale = available / base.width;
-      const viewport = page.getViewport({ scale: fitScale * dpr });
-
-      canvas.width = Math.floor(viewport.width);
-      canvas.height = Math.floor(viewport.height);
-      canvas.style.width = `${Math.floor(viewport.width / dpr)}px`;
-      canvas.style.height = `${Math.floor(viewport.height / dpr)}px`;
-
-      const ctx = canvas.getContext('2d', { alpha: false });
-      if (!ctx) return;
-
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      await page.render({ canvasContext: ctx, viewport }).promise;
-
-      // Burn the watermark into the same pixels as the content.
-      drawWatermark(ctx, canvas.width, canvas.height, identity, dpr);
-
-      renderedRef.current.add(pageNumber);
-    },
-    [identity],
-  );
-
-  // Render only what is near the viewport.
   useEffect(() => {
-    if (status !== 'ready' || !identity) return;
-    renderedRef.current.clear();
+    const container = containerRef.current;
+    if (!container) return;
 
+    // Quantised so ordinary scroll-driven layout jitter never re-renders a
+    // page, while a real resize or an orientation change does.
+    const measure = () => {
+      const available = container.clientWidth - 24;
+      const quantised = Math.max(240, Math.round(available / 40) * 40);
+      setPageWidth((current) => (current === quantised ? current : quantised));
+    };
+
+    measure();
+
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      window.clearTimeout(frame);
+      frame = window.setTimeout(measure, 250);
+    });
+    observer.observe(container);
+
+    return () => {
+      window.clearTimeout(frame);
+      observer.disconnect();
+    };
+  }, [status]);
+
+  // --- which pages are near enough to paint --------------------------------
+
+  useEffect(() => {
+    if (status !== 'ready' || pageCount === 0) return;
     const container = containerRef.current;
     if (!container) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
-        for (const entry of entries) {
-          const pageNumber = Number((entry.target as HTMLElement).dataset.pageWrapper);
-          if (!pageNumber) continue;
+        setVisiblePages((current) => {
+          const next = new Set(current);
+          let changed = false;
 
-          if (entry.isIntersecting) {
-            void renderPage(pageNumber);
-            if (entry.intersectionRatio > 0.5) {
-              setCurrentPage(pageNumber);
-              if (pageNumber > maxPageRef.current) {
-                maxPageRef.current = pageNumber;
-                report({ type: 'page', page: pageNumber, pageCount });
+          for (const entry of entries) {
+            const pageNumber = Number((entry.target as HTMLElement).dataset.pageWrapper);
+            if (!pageNumber) continue;
+
+            if (entry.isIntersecting) {
+              if (!next.has(pageNumber)) {
+                next.add(pageNumber);
+                changed = true;
+              }
+              if (entry.intersectionRatio > 0.5) {
+                setCurrentPage(pageNumber);
+                if (pageNumber > maxPageRef.current) {
+                  maxPageRef.current = pageNumber;
+                  report({ type: 'page', page: pageNumber, pageCount });
+                }
               }
             }
           }
-        }
+
+          return changed ? next : current;
+        });
       },
       { root: null, rootMargin: '600px 0px', threshold: [0, 0.5] },
     );
 
-    container
-      .querySelectorAll('[data-page-wrapper]')
-      .forEach((element) => observer.observe(element));
+    const elements = container.querySelectorAll('[data-page-wrapper]');
+    elements.forEach((element) => observer.observe(element));
 
     return () => observer.disconnect();
-  }, [status, identity, renderPage, pageCount, report]);
+  }, [status, pageCount, report]);
 
   // --- reading time --------------------------------------------------------
 
@@ -408,19 +440,19 @@ export function NoteViewer({ noteId, title, subtitle, backHref }: ViewerProps) {
         )}
 
         <div className="mx-auto flex max-w-[1100px] flex-col items-center gap-6">
-          {pages.map((pageNumber) => (
-            <div
-              key={pageNumber}
-              data-page-wrapper={pageNumber}
-              className="w-full max-w-full overflow-hidden rounded-md border border-border bg-white shadow-sm"
-            >
-              <canvas
-                data-page={pageNumber}
-                className="no-drag block h-auto w-full"
-                aria-label={`Page ${pageNumber}`}
+          {doc &&
+            identity &&
+            pages.map((pageNumber) => (
+              <PdfPage
+                key={pageNumber}
+                doc={doc}
+                pageNumber={pageNumber}
+                width={pageWidth}
+                identity={identity}
+                shouldRender={visiblePages.has(pageNumber)}
+                registerTask={registerTask}
               />
-            </div>
-          ))}
+            ))}
         </div>
 
         {identity && status === 'ready' && (
