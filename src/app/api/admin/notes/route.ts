@@ -1,29 +1,33 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { env } from '@/lib/env';
 import { Errors, toErrorResponse } from '@/lib/errors';
 import { contextFromHeaders } from '@/lib/request';
 import { requireApiAdmin } from '@/lib/auth/guards';
-import { buildNoteKey, looksLikePdf, storage } from '@/lib/storage/index';
-import { inspectPdf } from '@/lib/notes/pdf-meta';
+import { ingestPdfUpload } from '@/lib/notes/ingest';
 import { recordEvent } from '@/lib/analytics/events';
 import { writeAudit } from '@/lib/audit';
-import { firstError, noteMetadataSchema } from '@/lib/validation';
+import { firstError, noteUploadSchema } from '@/lib/validation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 /**
- * Creates a note.
+ * Puts a PDF into a unit.
  *
- * Two upload shapes are supported:
- *   • proxy   — the browser posts the file here and the server writes it to
- *               private storage (local driver, and small files anywhere).
- *   • direct  — the browser already PUT the file to object storage with a
- *               short-lived presigned URL and sends us the key. The server then
- *               reads the object's header and size back out of storage to
- *               validate it, so a client claim is never taken on trust.
+ * One unit holds one PDF, so this is an upsert rather than a create: if the unit
+ * is empty a note is created, and if it already has one the file is replaced and
+ * the previous file kept as a NoteVersion, exactly as the replace route does. A
+ * second upload to the same unit can therefore never produce a second note — and
+ * the database backs that up with a unique index on `notes."unitId"`, so even a
+ * racing pair of requests ends with one note.
+ *
+ * The note's title is the unit's name. There is no separate title to type in and
+ * none to keep in sync: a unit's name is fixed once created.
+ *
+ * The file itself is validated by `ingestPdfUpload`, which handles both the
+ * direct-to-storage and proxied upload shapes and never trusts a client claim
+ * about an uploaded object.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -32,12 +36,9 @@ export async function POST(request: NextRequest) {
 
     const form = await request.formData();
 
-    const parsed = noteMetadataSchema.safeParse({
-      title: String(form.get('title') ?? '').trim(),
-      description: String(form.get('description') ?? '').trim(),
+    const parsed = noteUploadSchema.safeParse({
       subjectId: String(form.get('subjectId') ?? ''),
       unitId: String(form.get('unitId') ?? ''),
-      topicId: String(form.get('topicId') ?? ''),
       status: String(form.get('status') ?? 'PUBLISHED'),
       visibility: String(form.get('visibility') ?? 'RESTRICTED'),
       price: String(form.get('price') ?? '0'),
@@ -45,72 +46,99 @@ export async function POST(request: NextRequest) {
     if (!parsed.success) throw Errors.validation(firstError(parsed.error));
     const meta = parsed.data;
 
-    await assertPlacement(meta.subjectId, meta.unitId || null, meta.topicId || null);
+    // The unit must exist and belong to the chosen subject — a client is never
+    // trusted to have sent a matching pair.
+    const unit = await prisma.unit.findFirst({
+      where: { id: meta.unitId, subjectId: meta.subjectId },
+      select: {
+        id: true,
+        name: true,
+        notes: {
+          select: { id: true, version: true, status: true, publishedAt: true, archivedAt: true },
+          take: 1,
+        },
+      },
+    });
+    if (!unit) throw Errors.validation('That unit does not belong to the selected subject.');
 
-    const driver = storage();
-    const uploadedKey = String(form.get('storageKey') ?? '');
-    const file = form.get('file');
+    const existing = unit.notes[0] ?? null;
+    const priceMinor = Math.round((meta.price ?? 0) * 100);
 
-    let storageKey: string;
-    let fileName: string;
-    let fileSize: number;
-    let checksum: string | null = null;
-    let pageCount: number | null = null;
+    const uploaded = await ingestPdfUpload(form, { fallbackFileName: `${unit.name}.pdf` });
+    const { storageKey, fileName, fileSize, checksum, pageCount } = uploaded;
 
-    if (uploadedKey) {
-      // --- direct-to-storage upload ---
-      if (!uploadedKey.startsWith('notes/')) throw Errors.validation('Invalid upload reference.');
+    if (existing) {
+      // --- replacement ---
+      const nextVersion = existing.version + 1;
+      const note = await prisma.$transaction(async (tx) => {
+        await tx.noteVersion.create({
+          data: {
+            noteId: existing.id,
+            version: nextVersion,
+            storageKey,
+            fileName,
+            fileSize,
+            checksum,
+            createdById: admin.id,
+          },
+        });
+        return tx.note.update({
+          where: { id: existing.id },
+          data: {
+            title: unit.name,
+            storageKey,
+            fileName,
+            fileSize,
+            checksum,
+            pageCount,
+            version: nextVersion,
+            status: meta.status,
+            visibility: meta.visibility,
+            priceMinor,
+            // Timestamps mark transitions, so replacing the file of an
+            // already-published note leaves its publication date alone.
+            publishedAt:
+              meta.status === 'PUBLISHED'
+                ? (existing.publishedAt ?? new Date())
+                : existing.publishedAt,
+            archivedAt:
+              meta.status === 'ARCHIVED' ? (existing.archivedAt ?? new Date()) : null,
+          },
+          select: { id: true, title: true },
+        });
+      });
 
-      const head = await driver.head(uploadedKey);
-      if (!head) throw Errors.validation('The upload did not complete. Please try again.');
-      if (head.size > env.uploads.maxBytes) {
-        await driver.delete(uploadedKey);
-        throw Errors.validation(`Files must be ${env.uploads.maxMb} MB or smaller.`);
-      }
+      await writeAudit({
+        action: 'NOTE_REPLACED',
+        actorId: admin.id,
+        actorEmail: admin.email,
+        targetType: 'note',
+        targetId: note.id,
+        targetLabel: note.title,
+        metadata: { from: existing.version, to: nextVersion, fileName, fileSize },
+        ctx,
+      });
+      await recordEvent({
+        type: 'NOTE_REPLACED',
+        userId: admin.id,
+        noteId: note.id,
+        subjectId: meta.subjectId,
+        ctx,
+        metadata: { version: nextVersion, fileSize },
+      });
 
-      const header = await driver.getRange(uploadedKey, 0, 1023);
-      if (!looksLikePdf(header)) {
-        await driver.delete(uploadedKey);
-        throw Errors.validation('That file is not a valid PDF.');
-      }
-
-      storageKey = uploadedKey;
-      fileSize = head.size;
-      fileName = String(form.get('fileName') ?? 'note.pdf').slice(0, 200);
-    } else {
-      // --- proxied upload ---
-      if (!(file instanceof File)) throw Errors.validation('Choose a PDF file to upload.');
-      if (file.size === 0) throw Errors.validation('That file is empty.');
-      if (file.size > env.uploads.maxBytes) {
-        throw Errors.validation(`Files must be ${env.uploads.maxMb} MB or smaller.`);
-      }
-      if (file.type && !env.uploads.allowedMimeTypes.includes(file.type as 'application/pdf')) {
-        throw Errors.validation('Only PDF files are supported right now.');
-      }
-
-      const buffer = Buffer.from(await file.arrayBuffer());
-      const inspection = inspectPdf(buffer);
-      if (!inspection.valid) throw Errors.validation(inspection.reason ?? 'Invalid PDF.');
-
-      storageKey = buildNoteKey(file.name);
-      await driver.put(storageKey, buffer, 'application/pdf');
-
-      fileName = file.name.slice(0, 200);
-      fileSize = buffer.byteLength;
-      checksum = inspection.checksum;
-      pageCount = inspection.pageCount;
+      return NextResponse.json({ ok: true, noteId: note.id, replaced: true });
     }
 
+    // --- first upload for this unit ---
     const note = await prisma.note.create({
       data: {
-        title: meta.title,
-        description: meta.description || null,
+        title: unit.name,
         subjectId: meta.subjectId,
-        unitId: meta.unitId || null,
-        topicId: meta.topicId || null,
+        unitId: unit.id,
         status: meta.status,
         visibility: meta.visibility,
-        priceMinor: Math.round((meta.price ?? 0) * 100),
+        priceMinor,
         storageKey,
         fileName,
         fileSize,
@@ -138,7 +166,7 @@ export async function POST(request: NextRequest) {
         fileSize,
         status: meta.status,
         visibility: meta.visibility,
-        priceMinor: Math.round((meta.price ?? 0) * 100),
+        priceMinor,
       },
       ctx,
     });
@@ -151,31 +179,8 @@ export async function POST(request: NextRequest) {
       metadata: { fileSize },
     });
 
-    return NextResponse.json({ ok: true, noteId: note.id }, { status: 201 });
+    return NextResponse.json({ ok: true, noteId: note.id, replaced: false }, { status: 201 });
   } catch (error) {
     return toErrorResponse(error);
-  }
-}
-
-/** A note's unit must belong to its subject, and its topic to that unit. */
-async function assertPlacement(subjectId: string, unitId: string | null, topicId: string | null) {
-  const subject = await prisma.subject.findUnique({ where: { id: subjectId }, select: { id: true } });
-  if (!subject) throw Errors.validation('Choose a valid subject.');
-
-  if (unitId) {
-    const unit = await prisma.unit.findFirst({
-      where: { id: unitId, subjectId },
-      select: { id: true },
-    });
-    if (!unit) throw Errors.validation('That unit does not belong to the selected subject.');
-  }
-
-  if (topicId) {
-    if (!unitId) throw Errors.validation('Pick a unit before choosing a topic.');
-    const topic = await prisma.topic.findFirst({
-      where: { id: topicId, unitId },
-      select: { id: true },
-    });
-    if (!topic) throw Errors.validation('That topic does not belong to the selected unit.');
   }
 }

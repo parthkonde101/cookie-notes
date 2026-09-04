@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
+  Check,
   ChevronRight,
   FilePlus2,
   FileText,
@@ -25,16 +26,16 @@ import {
 import { ActionButton } from '@/components/admin/action-button';
 import { ActionForm, Field } from '@/components/admin/action-form';
 import { NoteUploadForm } from '@/components/admin/note-upload-form';
+import { SubjectExtras } from '@/components/admin/subject-extras';
 import {
   createSemesterAction,
   createSubjectAction,
-  createTopicAction,
   createUnitAction,
   deleteSemesterAction,
   deleteSubjectAction,
   deleteUnitAction,
 } from '@/app/admin/_actions/catalog';
-import type { CatalogSemester, PlacementOption } from '@/lib/admin/catalog';
+import type { CatalogSemester, CatalogUnit, PlacementOption } from '@/lib/admin/catalog';
 import { cn, formatBytes, pluralize } from '@/lib/utils';
 
 type DialogState =
@@ -42,16 +43,20 @@ type DialogState =
   | { kind: 'semester' }
   | { kind: 'subject'; semesterId?: string }
   | { kind: 'unit'; subjectId: string; subjectLabel: string }
-  | { kind: 'topic'; unitId: string; unitLabel: string }
   | { kind: 'upload'; subjectId?: string; unitId?: string };
 
 /**
  * The whole content-management surface in one screen.
  *
- * Semester → subject → unit → topic → note is a tree, so it is presented as one:
- * every level can be expanded, added to, and uploaded into without leaving the
- * page. Individual notes still have a detail page for editing and file
- * replacement.
+ * The structure is semester → subject → unit → PDF, plus each subject's past
+ * papers, and the screen says exactly that. Every level can be expanded, added
+ * to and uploaded into without leaving the page, and each unit row shows at a
+ * glance whether its PDF is there yet, so a half-filled subject is obvious
+ * rather than something to go looking for.
+ *
+ * A unit holds one PDF, so uploading into a unit that already has one replaces
+ * it. Individual notes still have a detail page for status, pricing, access and
+ * version history.
  */
 export function ContentManager({
   catalog,
@@ -93,14 +98,15 @@ export function ContentManager({
         subjects: semester.subjects
           .map((subject) => ({
             ...subject,
-            units: subject.units
-              .map((unit) => ({
-                ...unit,
-                notes: unit.notes.filter(
-                  (note) => matches(note.title) || matches(unit.name) || matches(subject.name),
-                ),
-              }))
-              .filter((unit) => unit.notes.length > 0 || matches(unit.name)),
+            // A unit matches on its own name, its subject, or the file sitting
+            // in it — never filtered down to "units that have a PDF", since a
+            // missing upload is exactly what an admin searches for.
+            units: subject.units.filter(
+              (unit) =>
+                matches(unit.name) ||
+                matches(subject.name) ||
+                (unit.note !== null && matches(unit.note.fileName)),
+            ),
             looseNotes: subject.looseNotes.filter((note) => matches(note.title)),
           }))
           .filter(
@@ -121,7 +127,7 @@ export function ContentManager({
           className="mt-8 py-16"
           icon={Layers}
           title="No academic content yet"
-          description="Build your college's structure here: start with a semester, then add subjects, units and topics, and upload notes into them."
+          description="Build your college's structure here: start with a semester, then add subjects and their units, and upload one PDF into each unit."
           action={
             <Button onClick={() => setDialog({ kind: 'semester' })}>
               <Plus className="size-4" />
@@ -141,7 +147,7 @@ export function ContentManager({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Filter by note, unit or subject"
+          placeholder="Filter by unit, subject or file"
           className="min-w-[200px] max-w-sm flex-1"
           aria-label="Filter content"
         />
@@ -156,10 +162,16 @@ export function ContentManager({
           </Button>
           <Button size="sm" onClick={() => setDialog({ kind: 'upload' })}>
             <FilePlus2 className="size-4" />
-            Upload note
+            Upload PDF
           </Button>
         </div>
       </div>
+
+      {/* Says the shape of the thing being managed, so the two independent
+          structures on this screen are not mistaken for one. */}
+      <p className="mt-3 text-xs text-muted-foreground">
+        Subject → units, one PDF per unit. Past papers hang off the subject itself, one per year.
+      </p>
 
       {filtered.length === 0 ? (
         <EmptyState className="mt-6" icon={FileText} title={`Nothing matches “${query}”`} />
@@ -167,6 +179,16 @@ export function ContentManager({
         <div className="mt-5 space-y-3">
           {filtered.map((semester) => {
             const open = !collapsed.has(semester.id);
+            // Coverage, not a note total: what an admin wants at a glance is how
+            // much of the semester is still missing its PDFs.
+            const units = semester.subjects.reduce(
+              (sum, subject) => sum + subject.units.length,
+              0,
+            );
+            const missing = semester.subjects.reduce(
+              (sum, subject) => sum + subject.missingCount,
+              0,
+            );
 
             return (
               <section key={semester.id} className="overflow-hidden rounded-lg border border-border">
@@ -186,7 +208,7 @@ export function ContentManager({
                     <span className="truncate font-medium">{semester.name}</span>
                     <span className="shrink-0 text-xs text-muted-foreground">
                       {pluralize(semester.subjects.length, 'subject')} ·{' '}
-                      {pluralize(semester.noteCount, 'note')}
+                      {units - missing}/{units} units uploaded
                     </span>
                     {semester.isArchived && <Badge variant="outline">archived</Badge>}
                   </button>
@@ -241,7 +263,9 @@ export function ContentManager({
                               <span className="truncate font-medium">{subject.name}</span>
                               {subject.code && <Badge variant="outline">{subject.code}</Badge>}
                               <span className="shrink-0 text-xs text-muted-foreground">
-                                {pluralize(subject.noteCount, 'note')}
+                                {subject.units.length === 0
+                                  ? 'no units'
+                                  : `${subject.units.length - subject.missingCount}/${subject.units.length} units uploaded`}
                               </span>
                             </div>
 
@@ -263,10 +287,11 @@ export function ContentManager({
                               <Button
                                 variant="ghost"
                                 size="sm"
+                                disabled={subject.units.length === 0}
                                 onClick={() => setDialog({ kind: 'upload', subjectId: subject.id })}
                               >
                                 <FilePlus2 className="size-3.5" />
-                                Note
+                                PDF
                               </Button>
                               {subject.noteCount === 0 && subject.units.length === 0 && (
                                 <ActionButton
@@ -287,6 +312,14 @@ export function ContentManager({
                             </div>
                           </div>
 
+                          <SubjectExtras
+                            subjectId={subject.id}
+                            subjectName={subject.name}
+                            cover={subject.cover}
+                            pyqs={subject.pyqs}
+                            maxUploadMb={maxUploadMb}
+                          />
+
                           {subject.looseNotes.length > 0 && (
                             <div className="mt-3 space-y-1">
                               <p className="text-xs uppercase tracking-wide text-muted-foreground">
@@ -303,79 +336,24 @@ export function ContentManager({
                           )}
 
                           <div className="mt-3 space-y-2">
-                            {subject.units.length === 0 && subject.looseNotes.length === 0 ? (
+                            {subject.units.length === 0 ? (
                               <p className="text-xs text-muted-foreground">
-                                No units yet — add one, or upload a note directly to the subject.
+                                No units yet — add one, then upload its PDF.
                               </p>
                             ) : (
                               subject.units.map((unit) => (
-                                <div
+                                <UnitRow
                                   key={unit.id}
-                                  className="rounded border border-border/70 bg-muted/25 p-2.5"
-                                >
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <div className="min-w-0 flex-1">
-                                      <p className="truncate text-sm font-medium">{unit.name}</p>
-                                      <p className="text-xs text-muted-foreground">
-                                        {pluralize(unit.notes.length, 'note')}
-                                        {unit.topics.length > 0 &&
-                                          ` · ${unit.topics.map((topic) => topic.name).join(', ')}`}
-                                      </p>
-                                    </div>
-                                    <div className="flex shrink-0 items-center gap-1">
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        onClick={() =>
-                                          setDialog({
-                                            kind: 'topic',
-                                            unitId: unit.id,
-                                            unitLabel: `${subject.name} · ${unit.name}`,
-                                          })
-                                        }
-                                      >
-                                        <Plus className="size-3.5" />
-                                        Topic
-                                      </Button>
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        onClick={() =>
-                                          setDialog({
-                                            kind: 'upload',
-                                            subjectId: subject.id,
-                                            unitId: unit.id,
-                                          })
-                                        }
-                                      >
-                                        <FilePlus2 className="size-3.5" />
-                                        Note
-                                      </Button>
-                                      {unit.notes.length === 0 && (
-                                        <ActionButton
-                                          variant="ghost"
-                                          size="icon-sm"
-                                          aria-label={`Delete ${unit.name}`}
-                                          action={deleteUnitAction.bind(null, unit.id)}
-                                        >
-                                          <Trash2 className="size-3.5" />
-                                        </ActionButton>
-                                      )}
-                                    </div>
-                                  </div>
-
-                                  {unit.notes.length > 0 && (
-                                    <div className="mt-2 space-y-1">
-                                      {unit.notes.map((note) => (
-                                        <NoteRow
-                                          key={note.id}
-                                          note={note}
-                                          currencySymbol={currencySymbol}
-                                        />
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
+                                  unit={unit}
+                                  currencySymbol={currencySymbol}
+                                  onUpload={() =>
+                                    setDialog({
+                                      kind: 'upload',
+                                      subjectId: subject.id,
+                                      unitId: unit.id,
+                                    })
+                                  }
+                                />
                               ))
                             )}
                           </div>
@@ -474,28 +452,13 @@ export function ContentManager({
             </>
           )}
 
-          {dialog.kind === 'topic' && (
-            <>
-              <DialogHeader>
-                <DialogTitle>New topic</DialogTitle>
-                <DialogDescription>Adding to {dialog.unitLabel}.</DialogDescription>
-              </DialogHeader>
-              <ActionForm action={createTopicAction} submitLabel="Create topic" onSuccess={close}>
-                <input type="hidden" name="unitId" value={dialog.unitId} />
-                <Field label="Name" htmlFor="topic-name">
-                  <Input id="topic-name" name="name" placeholder="Decision Trees" required autoFocus />
-                </Field>
-              </ActionForm>
-            </>
-          )}
-
           {dialog.kind === 'upload' && (
             <>
               <DialogHeader>
-                <DialogTitle>Upload a note</DialogTitle>
+                <DialogTitle>Upload a PDF</DialogTitle>
                 <DialogDescription>
-                  The PDF goes into private storage. Students only ever reach it through the
-                  in-app reader.
+                  Pick the unit it belongs to. The PDF goes into private storage — students only
+                  ever reach it through the in-app reader.
                 </DialogDescription>
               </DialogHeader>
               <NoteUploadForm
@@ -514,6 +477,103 @@ export function ContentManager({
   }
 }
 
+/**
+ * One unit, and the state of its PDF.
+ *
+ * The row answers the only two questions worth asking at this level — which unit
+ * is this, and is its PDF here — and gives the one action that follows from the
+ * answer. A unit with a file shows which file, so an admin can tell at a glance
+ * that "Unit 4" is holding the file they meant to upload; a unit without one is
+ * plainly marked rather than simply absent.
+ */
+function UnitRow({
+  unit,
+  currencySymbol,
+  onUpload,
+}: {
+  unit: CatalogUnit;
+  currencySymbol: string;
+  onUpload: () => void;
+}) {
+  const note = unit.note;
+
+  return (
+    <div className="rounded border border-border/70 bg-muted/25 p-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          aria-hidden
+          className={cn(
+            'flex size-6 shrink-0 items-center justify-center rounded font-mono text-[11px] font-semibold',
+            note ? 'bg-primary/12 text-primary' : 'bg-muted text-muted-foreground',
+          )}
+        >
+          {unit.index}
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">
+            <span className="sr-only">Unit {unit.index}: </span>
+            {unit.name}
+          </p>
+          {note ? (
+            <p className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+              <Check aria-hidden className="size-3 shrink-0 text-primary" />
+              <span className="truncate">{note.fileName}</span>
+              <span className="shrink-0 tabular-nums">· {formatBytes(note.fileSize)}</span>
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">Not uploaded</p>
+          )}
+        </div>
+
+        {note && (
+          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+            {note.priceMinor > 0 && (
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {currencySymbol}
+                {note.priceMinor / 100}
+              </span>
+            )}
+            <Badge
+              variant={
+                note.status === 'PUBLISHED'
+                  ? 'success'
+                  : note.status === 'DRAFT'
+                    ? 'warning'
+                    : 'outline'
+              }
+            >
+              {note.status.toLowerCase()}
+            </Badge>
+            {note.visibility === 'FREE' && <Badge variant="secondary">free</Badge>}
+          </div>
+        )}
+
+        <div className="flex shrink-0 items-center gap-1">
+          <Button variant="ghost" size="sm" onClick={onUpload}>
+            <FilePlus2 className="size-3.5" />
+            {note ? 'Replace' : 'Upload'}
+          </Button>
+          {note ? (
+            <Button asChild variant="ghost" size="sm">
+              <Link href={`/admin/notes/${note.id}`}>Manage</Link>
+            </Button>
+          ) : (
+            <ActionButton
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Delete ${unit.name}`}
+              action={deleteUnitAction.bind(null, unit.id)}
+            >
+              <Trash2 className="size-3.5" />
+            </ActionButton>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function NoteRow({
   note,
   currencySymbol,
@@ -529,11 +589,6 @@ function NoteRow({
       <FileText className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate">{note.title}</span>
 
-      {note.topicName && (
-        <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
-          {note.topicName}
-        </span>
-      )}
       {note.priceMinor > 0 && (
         <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
           {currencySymbol}

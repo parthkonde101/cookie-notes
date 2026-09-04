@@ -1,11 +1,11 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { FileUp, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Input, Select, Textarea } from '@/components/ui/input';
+import { Input, Select } from '@/components/ui/input';
 import { Alert } from '@/components/ui/feedback';
 import { Field } from '@/components/admin/action-form';
 import { formatBytes, cn } from '@/lib/utils';
@@ -21,12 +21,17 @@ interface Props {
 }
 
 /**
- * Upload flow.
+ * Upload flow: subject → unit → PDF.
+ *
+ * That is the whole form. There is no title to type — the note is named after
+ * the unit — and no topic to pick, because a unit holds exactly one PDF. Picking
+ * a unit that already has one is how you replace it: the form says so, and the
+ * server keeps the old file as a version rather than creating a second note.
  *
  * With object storage configured the file goes browser → bucket with a
  * short-lived presigned URL, which avoids the few-megabyte request body limit
  * serverless platforms impose. With local storage it is posted through the app.
- * Either way the server validates the bytes before creating the note.
+ * Either way the server validates the bytes before touching the database.
  */
 export function NoteUploadForm({
   placements,
@@ -42,7 +47,6 @@ export function NoteUploadForm({
   const [file, setFile] = useState<File | null>(null);
   const [subjectId, setSubjectId] = useState(defaultSubjectId ?? placements[0]?.subjectId ?? '');
   const [unitId, setUnitId] = useState(defaultUnitId ?? '');
-  const [topicId, setTopicId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [pending, setPending] = useState(false);
@@ -51,8 +55,21 @@ export function NoteUploadForm({
     () => placements.find((placement) => placement.subjectId === subjectId),
     [placements, subjectId],
   );
-  const units = selected?.units ?? [];
-  const topics = units.find((unit) => unit.id === unitId)?.topics ?? [];
+  const units = useMemo(() => selected?.units ?? [], [selected]);
+  const unit = units.find((candidate) => candidate.id === unitId) ?? null;
+
+  // A unit is required, so one is always selected when the subject has any.
+  // Doing it here rather than in the change handler also covers the first
+  // render and a catalogue that changed underneath us after a refresh.
+  useEffect(() => {
+    if (units.length === 0) {
+      if (unitId !== '') setUnitId('');
+      return;
+    }
+    if (!units.some((candidate) => candidate.id === unitId)) {
+      setUnitId(units[0]!.id);
+    }
+  }, [units, unitId]);
 
   function pickFile(next: File | null) {
     setError(null);
@@ -77,6 +94,10 @@ export function NoteUploadForm({
 
     if (!file) {
       setError('Choose a PDF to upload.');
+      return;
+    }
+    if (!unitId) {
+      setError('Add a unit to this subject first — a PDF belongs to a unit.');
       return;
     }
 
@@ -115,11 +136,15 @@ export function NoteUploadForm({
       }
 
       const response = await fetch('/api/admin/notes', { method: 'POST', body: payload });
-      const data = (await response.json().catch(() => ({}))) as { error?: string; noteId?: string };
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        noteId?: string;
+        replaced?: boolean;
+      };
 
       if (!response.ok) throw new Error(data.error ?? 'The upload failed.');
 
-      toast.success('Note uploaded.');
+      toast.success(data.replaced ? 'PDF replaced.' : 'PDF uploaded.');
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       router.refresh();
@@ -213,26 +238,14 @@ export function NoteUploadForm({
         </div>
       )}
 
-      <Field label="Title" htmlFor="title">
-        <Input id="title" name="title" required placeholder="Unit 2 — Decision Trees & SVM" />
-      </Field>
-
-      <Field label="Description" htmlFor="description" hint="Shown on the catalogue card.">
-        <Textarea id="description" name="description" rows={2} />
-      </Field>
-
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Subject" htmlFor="subjectId">
           <Select
             id="subjectId"
             name="subjectId"
             required
             value={subjectId}
-            onChange={(event) => {
-              setSubjectId(event.target.value);
-              setUnitId('');
-              setTopicId('');
-            }}
+            onChange={(event) => setSubjectId(event.target.value)}
           >
             {placements.map((placement) => (
               <option key={placement.subjectId} value={placement.subjectId}>
@@ -242,43 +255,40 @@ export function NoteUploadForm({
           </Select>
         </Field>
 
-        <Field label="Unit" htmlFor="unitId">
+        <Field
+          label="Unit"
+          htmlFor="unitId"
+          hint={
+            units.length === 0
+              ? 'This subject has no units yet. Add one first.'
+              : 'The PDF is filed here and takes the unit’s name.'
+          }
+        >
           <Select
             id="unitId"
             name="unitId"
+            required
             value={unitId}
             disabled={units.length === 0}
-            onChange={(event) => {
-              setUnitId(event.target.value);
-              setTopicId('');
-            }}
+            onChange={(event) => setUnitId(event.target.value)}
           >
-            <option value="">None</option>
-            {units.map((unit) => (
-              <option key={unit.id} value={unit.id}>
-                {unit.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
-
-        <Field label="Topic" htmlFor="topicId">
-          <Select
-            id="topicId"
-            name="topicId"
-            value={topicId}
-            disabled={topics.length === 0}
-            onChange={(event) => setTopicId(event.target.value)}
-          >
-            <option value="">None</option>
-            {topics.map((topic) => (
-              <option key={topic.id} value={topic.id}>
-                {topic.name}
+            {units.length === 0 && <option value="">No units yet</option>}
+            {units.map((option) => (
+              <option key={option.id} value={option.id}>
+                Unit {option.index} — {option.name}
+                {option.hasNote ? ' (has a PDF)' : ''}
               </option>
             ))}
           </Select>
         </Field>
       </div>
+
+      {unit?.hasNote && (
+        <Alert variant="warning" title="This unit already has a PDF">
+          Uploading here replaces it. The current file is kept as an earlier version, and no second
+          note is created.
+        </Alert>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Field label="Status" htmlFor="status">
@@ -306,8 +316,8 @@ export function NoteUploadForm({
         </Field>
       </div>
 
-      <Button type="submit" size="lg" loading={pending} disabled={!file}>
-        Upload note
+      <Button type="submit" size="lg" loading={pending} disabled={!file || units.length === 0}>
+        {unit?.hasNote ? 'Replace PDF' : 'Upload PDF'}
       </Button>
     </form>
   );
@@ -331,8 +341,51 @@ function putWithProgress(
     xhr.onload = () =>
       xhr.status >= 200 && xhr.status < 300
         ? resolve()
-        : reject(new Error(`Storage rejected the upload (${xhr.status}).`));
-    xhr.onerror = () => reject(new Error('The upload connection failed.'));
+        : reject(new Error(describeStorageFailure(xhr.status, xhr.responseText)));
+    xhr.onerror = () => reject(new Error(describeStorageFailure(xhr.status, '')));
+    xhr.ontimeout = () => reject(new Error('The upload timed out before storage responded.'));
     xhr.send(file);
   });
+}
+
+/**
+ * Turns a failed direct-to-storage PUT into something an operator can act on.
+ *
+ * The browser deliberately hides almost everything about a cross-origin failure,
+ * so the two cases have to be told apart by shape: status 0 means no usable
+ * response reached us at all (CORS rejection, DNS, TLS, offline), while any real
+ * status means storage answered and its S3 error code says why.
+ *
+ * Only the `<Code>` element of the S3 error document is surfaced. The presigned
+ * URL is never included in a message — it carries the signature and the access
+ * key id.
+ */
+export function describeStorageFailure(status: number, body: string): string {
+  if (status === 0) {
+    return (
+      'The upload could not reach storage (no response). This is usually the storage ' +
+      "bucket's CORS rules not allowing PUT from this site's address — check that the " +
+      'current site origin is in the allowed origins.'
+    );
+  }
+
+  const code = /<Code>([^<]{1,64})<\/Code>/.exec(body)?.[1];
+
+  const hint: Record<string, string> = {
+    SignatureDoesNotMatch:
+      'the storage credentials or region do not match the signature (R2 expects region "auto")',
+    AccessDenied: 'the storage API token lacks write permission on this bucket',
+    InvalidAccessKeyId: 'the storage access key id is not valid for this account',
+    NoSuchBucket: 'the configured bucket does not exist at this endpoint',
+    BadDigest: 'storage computed a different checksum for the uploaded bytes',
+    InvalidRequest: 'storage rejected the request as malformed',
+    RequestTimeTooSkewed: "the server clock is too far from storage's",
+    EntityTooLarge: 'the file is larger than storage accepts',
+  };
+
+  if (code) {
+    const because = hint[code];
+    return `Storage rejected the upload (${status} ${code})${because ? ` — ${because}` : ''}.`;
+  }
+  return `Storage rejected the upload (${status}).`;
 }

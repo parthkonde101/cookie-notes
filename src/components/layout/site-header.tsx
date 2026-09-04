@@ -61,11 +61,14 @@ export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveU
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-3 px-4 sm:px-6">
-        <Link href="/" className="flex shrink-0 items-center gap-2.5">
-          <span className="flex size-8 items-center justify-center rounded-md bg-primary/12 text-primary ring-1 ring-inset ring-primary/25">
+        {/* The actions on the right are fixed-width, so the brand is what gives
+            way on a narrow phone — the mark stays, the wordmark truncates. That
+            is what keeps the header from pushing the page sideways at 320px. */}
+        <Link href="/" className="flex min-w-0 items-center gap-2.5">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/12 text-primary ring-1 ring-inset ring-primary/25">
             <Cookie className="size-4" />
           </span>
-          <span className="text-[0.95rem] font-semibold tracking-tight">Cookie Notes</span>
+          <span className="truncate text-[0.95rem] font-semibold tracking-tight">Cookie Notes</span>
         </Link>
 
         <div className="flex-1" />
@@ -81,7 +84,7 @@ export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveU
         )}
 
         {user ? (
-          <div className="relative" ref={menuRef}>
+          <div className="relative shrink-0" ref={menuRef}>
             <button
               type="button"
               aria-haspopup="menu"
@@ -143,12 +146,13 @@ export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveU
             )}
           </div>
         ) : (
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => requestAuth('/', { mode: 'signin' })}>
               Sign in
             </Button>
             <Button size="sm" onClick={() => requestAuth('/', { mode: 'register' })}>
-              Create account
+              <span className="sm:hidden">Sign up</span>
+              <span className="hidden sm:inline">Create account</span>
             </Button>
           </div>
         )}

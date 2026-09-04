@@ -29,6 +29,7 @@ const MODELS = [
   'topic',
   'note',
   'noteVersion',
+  'pyq',
   'entitlement',
   'order',
   'activityEvent',
@@ -91,6 +92,37 @@ async function main() {
     SELECT COUNT(*)::int AS count FROM pg_indexes WHERE schemaname = 'public'
   `;
   console.log(`  ${indexes[0]?.count ?? 0} indexes present`);
+
+  // One unit, one PDF. This is the rule the whole unit UI is built on, so it is
+  // checked as a constraint in the database rather than trusted to the
+  // application: a stray second note would otherwise only surface as a confusing
+  // page. Checked by name because the index is what enforces it.
+  console.log('\nChecking the one-note-per-unit rule…');
+  const unique = await prisma.$queryRaw<{ count: number }[]>`
+    SELECT COUNT(*)::int AS count
+    FROM pg_indexes
+    WHERE schemaname = 'public' AND tablename = 'notes' AND indexname = 'notes_unitId_key'
+  `;
+  if ((unique[0]?.count ?? 0) === 0) {
+    failures += 1;
+    console.error('  ✗ notes_unitId_key is missing — a unit could hold more than one note');
+  } else {
+    console.log('  ✓ notes_unitId_key (unique index on notes."unitId")');
+  }
+
+  const duplicates = await prisma.$queryRaw<{ unitId: string; notes: bigint }[]>`
+    SELECT "unitId", COUNT(*) AS notes
+    FROM "notes"
+    WHERE "unitId" IS NOT NULL
+    GROUP BY "unitId"
+    HAVING COUNT(*) > 1
+  `;
+  if (duplicates.length > 0) {
+    failures += 1;
+    console.error(`  ✗ ${duplicates.length} unit(s) hold more than one note`);
+  } else {
+    console.log('  ✓ no unit holds more than one note');
+  }
 
   if (failures > 0) {
     console.error(`\n${failures} problem(s) found. Run \`npm run db:setup\` (or \`npx prisma migrate dev\`).`);

@@ -21,10 +21,23 @@ interface ViewerProps {
   title: string;
   subtitle: string;
   backHref: string;
+  /**
+   * Which protected endpoint family to read through.
+   *
+   * Notes and previous-year papers are different models with different
+   * authorisation rules, but the reader itself — token exchange, canvas
+   * rasterisation, watermarking, telemetry — is identical, so the endpoint
+   * prefix is the only thing that varies. Both families answer
+   * POST <base>/<id>/view-token with a contentUrl to fetch. Per-reading
+   * telemetry is note-only: papers return a null viewId and the reporter then
+   * stays silent, so no events endpoint is called for them.
+   */
+  apiBase?: '/api/notes' | '/api/pyqs';
 }
 
 interface OpenResponse {
-  viewId: string;
+  /** Null for documents that are not tracked per reading (previous-year papers). */
+  viewId: string | null;
   contentUrl: string;
   watermark: { email: string; name: string; sessionRef: string; issuedAt: string };
 }
@@ -50,7 +63,13 @@ type Status = 'loading' | 'ready' | 'error';
  *
  * See the README for what this does and does not protect against.
  */
-export function NoteViewer({ noteId, title, subtitle, backHref }: ViewerProps) {
+export function NoteViewer({
+  noteId,
+  title,
+  subtitle,
+  backHref,
+  apiBase = '/api/notes',
+}: ViewerProps) {
   const [status, setStatus] = useState<Status>('loading');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [doc, setDoc] = useState<import('pdfjs-dist').PDFDocumentProxy | null>(null);
@@ -91,7 +110,7 @@ export function NoteViewer({ noteId, title, subtitle, backHref }: ViewerProps) {
     (body: Record<string, unknown>, beacon = false) => {
       if (!viewIdRef.current) return;
       const payload = JSON.stringify({ ...body, viewId: viewIdRef.current });
-      const url = `/api/notes/${noteId}/events`;
+      const url = `${apiBase}/${noteId}/events`;
 
       if (beacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
         navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }));
@@ -104,7 +123,7 @@ export function NoteViewer({ noteId, title, subtitle, backHref }: ViewerProps) {
         keepalive: beacon,
       }).catch(() => undefined);
     },
-    [noteId],
+    [noteId, apiBase],
   );
 
   const flagSuspicious = useCallback(
@@ -122,7 +141,7 @@ export function NoteViewer({ noteId, title, subtitle, backHref }: ViewerProps) {
     async function load() {
       try {
         // 1. Ask the server to authorise this reading session.
-        const openResponse = await fetch(`/api/notes/${noteId}/view-token`, {
+        const openResponse = await fetch(`${apiBase}/${noteId}/view-token`, {
           method: 'POST',
           cache: 'no-store',
         });
@@ -196,7 +215,7 @@ export function NoteViewer({ noteId, title, subtitle, backHref }: ViewerProps) {
       const settled = Promise.all(pending.map((task) => task.promise.catch(() => undefined)));
       void settled.then(() => loaded?.destroy());
     };
-  }, [noteId, report]);
+  }, [noteId, apiBase, report]);
 
   // --- how wide should a page paint ----------------------------------------
 

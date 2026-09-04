@@ -14,7 +14,7 @@ import { NextResponse, type NextRequest } from 'next/server';
  * The catalogue at `/` and `/subject/*` is deliberately public — browsing never
  * requires an account. Only reading a note and the account/admin areas do.
  */
-const PROTECTED_PREFIXES = ['/notes', '/account', '/admin'];
+const PROTECTED_PREFIXES = ['/notes', '/pyqs', '/account', '/admin'];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/feedback';
+import { describeStorageFailure } from '@/components/admin/note-upload-form';
 import { formatBytes } from '@/lib/utils';
 
 export function NoteReplaceForm({ noteId, maxMb }: { noteId: string; maxMb: number }) {
@@ -36,8 +37,14 @@ export function NoteReplaceForm({ noteId, maxMb }: { noteId: string; maxMb: numb
           method: 'PUT',
           headers: presign.headers,
           body: file,
-        });
-        if (!put.ok) throw new Error(`Storage rejected the upload (${put.status}).`);
+        }).catch(() => null);
+
+        // A null response means the request never produced one — same
+        // CORS/network case the upload form reports as status 0.
+        if (!put) throw new Error(describeStorageFailure(0, ''));
+        if (!put.ok) {
+          throw new Error(describeStorageFailure(put.status, await put.text().catch(() => '')));
+        }
         payload.append('storageKey', presign.key);
         payload.append('fileName', file.name);
       } else {

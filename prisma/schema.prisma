@@ -119,6 +119,11 @@ enum EventType {
   NOTE_UPDATED
   NOTE_REPLACED
   NOTE_DELETED
+  PYQ_OPENED
+  PYQ_UPLOADED
+  PYQ_REPLACED
+  PYQ_DELETED
+  SUBJECT_COVER_UPDATED
   ACCESS_GRANTED
   ACCESS_REVOKED
   USER_MODIFIED
@@ -154,6 +159,10 @@ enum AuditAction {
   TOPIC_CREATED
   TOPIC_UPDATED
   TOPIC_DELETED
+  PYQ_UPLOADED
+  PYQ_REPLACED
+  PYQ_DELETED
+  SUBJECT_COVER_UPDATED
   CONFIG_CHANGED
 }
 
@@ -191,6 +200,7 @@ model User {
   events              ActivityEvent[]
   auditLogs           AuditLog[]           @relation("AuditActor")
   uploadedNotes       Note[]               @relation("NoteUploader")
+  uploadedPyqs        Pyq[]                @relation("PyqUploader")
   noteVersions        NoteVersion[]        @relation("NoteVersionAuthor")
   noteViews           NoteView[]
   passwordResets      PasswordResetToken[]
@@ -301,13 +311,63 @@ model Subject {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  /// Notebook cover. An opaque key inside the same private storage the notes
+  /// use — never a public URL. Covers are catalogue imagery rather than
+  /// protected content, so they are served through their own application route
+  /// that may be cached, but the bucket itself stays private. Null means the UI
+  /// draws a generated cover instead.
+  coverStorageKey String?
+  coverMimeType   String?
+  coverUpdatedAt  DateTime?
+
   semester Semester @relation(fields: [semesterId], references: [id], onDelete: Cascade)
   units    Unit[]
   notes    Note[]
+  pyqs     Pyq[]
 
   @@unique([semesterId, name])
   @@index([semesterId, isArchived, position])
   @@map("subjects")
+}
+
+/// A previous-year question paper.
+///
+/// Deliberately *not* a Note: a PYQ belongs to a subject as a whole and has no
+/// place in the unit → topic hierarchy, so forcing it in would mean inventing a
+/// fake unit for every subject. It is its own model with its own admin surface,
+/// but it is stored and served exactly like a note — private storage, view
+/// token, canvas reader, watermark — so the protection model is shared rather
+/// than duplicated.
+model Pyq {
+  id        String @id @default(cuid())
+  subjectId String
+  year      Int
+  /// Optional label for the rare case of a paper needing more than its year,
+  /// e.g. "Supplementary". The card shows the year alone when this is null.
+  label     String?
+
+  storageKey String
+  fileName   String
+  fileSize   Int
+  mimeType   String  @default("application/pdf")
+  checksum   String?
+  pageCount  Int?
+
+  viewCount    Int       @default(0)
+  lastViewedAt DateTime?
+
+  uploadedById String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  subject    Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  uploadedBy User?   @relation("PyqUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  /// One paper per subject per year keeps the student list unambiguous and makes
+  /// "replace the 2024 paper" a natural update rather than a duplicate.
+  @@unique([subjectId, year])
+  @@index([subjectId, year])
+  @@map("pyqs")
 }
 
 model Unit {
@@ -391,8 +451,13 @@ model Note {
   views        NoteView[]
   events       ActivityEvent[]
 
+  /// One unit, one PDF. Postgres treats NULLs as distinct in a unique index, so
+  /// this constrains only notes that actually belong to a unit: each unit gets
+  /// at most one, while any number of notes may sit outside the unit structure.
+  /// Re-uploading to a unit therefore has to be a replacement, which is what the
+  /// admin flow does — the previous file is kept as a NoteVersion.
+  @@unique([unitId])
   @@index([subjectId, status])
-  @@index([unitId])
   @@index([status, visibility])
   @@index([createdAt])
   @@index([viewCount])

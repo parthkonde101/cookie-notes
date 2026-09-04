@@ -15,17 +15,24 @@ interface Props {
     description: string;
     subjectId: string;
     unitId: string;
-    topicId: string;
     status: string;
     visibility: string;
     price: number;
   };
 }
 
+/**
+ * The detail screen for one note.
+ *
+ * Uploading is subject → unit → PDF and nothing else; this screen is where an
+ * existing note is corrected — moved to a different unit, taken off the
+ * catalogue, repriced. The title is still editable because notes filed under the
+ * older model carry their own, but a note that lives in a unit is named after
+ * that unit and normally needs no attention here.
+ */
 export function NoteEditForm({ noteId, catalog, currencySymbol, initial }: Props) {
   const [subjectId, setSubjectId] = useState(initial.subjectId);
   const [unitId, setUnitId] = useState(initial.unitId);
-  const [topicId, setTopicId] = useState(initial.topicId);
 
   const subjects = useMemo(
     () =>
@@ -40,7 +47,6 @@ export function NoteEditForm({ noteId, catalog, currencySymbol, initial }: Props
   );
 
   const units = subjects.find((subject) => subject.id === subjectId)?.units ?? [];
-  const topics = units.find((unit) => unit.id === unitId)?.topics ?? [];
 
   return (
     <ActionForm action={updateNoteAction.bind(null, noteId)} submitLabel="Save changes">
@@ -52,7 +58,7 @@ export function NoteEditForm({ noteId, catalog, currencySymbol, initial }: Props
         <Textarea id="description" name="description" rows={3} defaultValue={initial.description} />
       </Field>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Subject" htmlFor="subjectId">
           <Select
             id="subjectId"
@@ -61,7 +67,6 @@ export function NoteEditForm({ noteId, catalog, currencySymbol, initial }: Props
             onChange={(event) => {
               setSubjectId(event.target.value);
               setUnitId('');
-              setTopicId('');
             }}
           >
             {subjects.map((subject) => (
@@ -72,38 +77,30 @@ export function NoteEditForm({ noteId, catalog, currencySymbol, initial }: Props
           </Select>
         </Field>
 
-        <Field label="Unit" htmlFor="unitId">
+        <Field
+          label="Unit"
+          htmlFor="unitId"
+          hint="A unit holds one PDF. Units that already have one are marked."
+        >
           <Select
             id="unitId"
             name="unitId"
             value={unitId}
             disabled={units.length === 0}
-            onChange={(event) => {
-              setUnitId(event.target.value);
-              setTopicId('');
-            }}
+            onChange={(event) => setUnitId(event.target.value)}
           >
             <option value="">None</option>
             {units.map((unit) => (
-              <option key={unit.id} value={unit.id}>
-                {unit.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
-
-        <Field label="Topic" htmlFor="topicId">
-          <Select
-            id="topicId"
-            name="topicId"
-            value={topicId}
-            disabled={topics.length === 0}
-            onChange={(event) => setTopicId(event.target.value)}
-          >
-            <option value="">None</option>
-            {topics.map((topic) => (
-              <option key={topic.id} value={topic.id}>
-                {topic.name}
+              <option
+                key={unit.id}
+                value={unit.id}
+                // Moving into an occupied unit would violate the one-PDF rule,
+                // so the option is shown (for context) but cannot be chosen.
+                // The note already in this unit is of course still selectable.
+                disabled={unit.note !== null && unit.note.id !== noteId}
+              >
+                Unit {unit.index} — {unit.name}
+                {unit.note !== null && unit.note.id !== noteId ? ' (has a PDF)' : ''}
               </option>
             ))}
           </Select>

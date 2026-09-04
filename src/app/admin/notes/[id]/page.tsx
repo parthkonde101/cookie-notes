@@ -131,7 +131,6 @@ export default async function AdminNotePage({ params }: { params: Promise<{ id: 
                   description: note.description ?? '',
                   subjectId: note.subjectId,
                   unitId: note.unitId ?? '',
-                  topicId: note.topicId ?? '',
                   status: note.status,
                   visibility: note.visibility,
                   price: note.priceMinor / 100,

@@ -1,8 +1,7 @@
 import type { Metadata } from 'next';
-import Link from 'next/link';
-import { ArrowRight, BookOpen, Library } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { Library } from 'lucide-react';
 import { EmptyState } from '@/components/ui/feedback';
+import { NotebookCard } from '@/components/catalog/notebook-card';
 import { catalogOverview, catalogTotals } from '@/lib/catalog';
 import { optionalUser } from '@/lib/auth/guards';
 import { recordEvent } from '@/lib/analytics/events';
@@ -14,11 +13,16 @@ export const metadata: Metadata = {
 export const dynamic = 'force-dynamic';
 
 /**
- * The product's front door and its only real destination.
+ * The shelf.
  *
- * The catalogue is public and identical for everyone — no login wall, no
- * personalised filtering. The header carries the name and nothing else; the
- * catalogue itself is the pitch.
+ * Every subject is a notebook, grouped by semester. The catalogue is public and
+ * identical for everyone — no login wall, no personalised filtering — and the
+ * covers carry the personality, so the page around them stays quiet.
+ *
+ * The grid is `auto-fill` with a `min()` floor rather than a set of breakpoint
+ * column counts. That makes the column count follow the space actually
+ * available, and the `min(…,100%)` is what stops a track wider than its
+ * container from forcing the page to scroll sideways on a narrow phone.
  */
 export default async function CatalogHomePage() {
   const [semesters, totals, auth, ctx] = await Promise.all([
@@ -37,6 +41,8 @@ export default async function CatalogHomePage() {
     metadata: { semesters: semesters.length, notes: totals.notes },
   });
 
+  let cardIndex = 0;
+
   return (
     <>
       {/* Hero — the name and the line, nothing else. */}
@@ -48,7 +54,7 @@ export default async function CatalogHomePage() {
         </div>
       </section>
 
-      {/* Catalogue */}
+      {/* The shelf */}
       <section className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 sm:py-12">
         {semesters.length === 0 ? (
           <EmptyState
@@ -69,35 +75,23 @@ export default async function CatalogHomePage() {
                   </p>
                 )}
 
-                <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {semester.subjects.map((subject) => (
-                    <Link
-                      key={subject.id}
-                      href={`/subject/${subject.slug}`}
-                      className="surface-interactive group flex flex-col p-4"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <span className="flex size-9 items-center justify-center rounded-md bg-primary/10 text-primary">
-                          <BookOpen className="size-4" />
-                        </span>
-                        {subject.code && <Badge variant="outline">{subject.code}</Badge>}
-                      </div>
-
-                      <h3 className="mt-3 text-pretty font-medium leading-snug transition-colors group-hover:text-primary">
-                        {subject.name}
-                      </h3>
-                      {subject.description && (
-                        <p className="mt-1.5 line-clamp-2 text-sm text-muted-foreground">
-                          {subject.description}
-                        </p>
-                      )}
-
-                      <p className="mt-auto flex items-center gap-1.5 pt-4 text-xs text-muted-foreground">
-                        Open
-                        <ArrowRight className="size-3 transition-transform group-hover:translate-x-0.5" />
-                      </p>
-                    </Link>
-                  ))}
+                <div className="mt-5 grid grid-cols-[repeat(auto-fill,minmax(min(9.5rem,100%),1fr))] gap-4 sm:gap-5">
+                  {semester.subjects.map((subject) => {
+                    // Roughly the first row on a wide screen loads eagerly so the
+                    // shelf paints immediately; everything below it waits until
+                    // it is scrolled to.
+                    const priority = cardIndex < 4;
+                    cardIndex += 1;
+                    return (
+                      <NotebookCard
+                        key={subject.id}
+                        name={subject.name}
+                        slug={subject.slug}
+                        cover={subject.cover}
+                        priority={priority}
+                      />
+                    );
+                  })}
                 </div>
               </div>
             ))}

@@ -1,4 +1,10 @@
 import type { Config } from 'tailwindcss';
+// Static ESM import rather than `require`. This file is TypeScript and is
+// evaluated as an ES module, where `require` is not defined. The package is
+// CommonJS (`export = plugin`), so `esModuleInterop` in tsconfig gives the
+// default import the same object `require('tailwindcss-animate')` returned —
+// the plugin behaviour is unchanged.
+import tailwindcssAnimate from 'tailwindcss-animate';
 
 const config: Config = {
   darkMode: ['class'],
@@ -86,7 +92,7 @@ const config: Config = {
       },
     },
   },
-  plugins: [require('tailwindcss-animate')],
+  plugins: [tailwindcssAnimate],
 };
 
 export default config;

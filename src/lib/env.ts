@@ -179,8 +179,29 @@ export function productionConfigWarnings(): string[] {
   if (auth && view && auth === view) {
     problems.push('AUTH_SECRET and VIEW_TOKEN_SECRET must be different values.');
   }
-  if (env.storage.driver === 's3' && !env.storage.s3.bucket) {
-    problems.push('STORAGE_DRIVER=s3 but S3_BUCKET is not set.');
+  if (env.storage.driver === 's3') {
+    // Names only — never the values. A missing one of these fails at upload
+    // time with an opaque browser error, so it is worth saying at boot.
+    const missing = (
+      [
+        ['S3_BUCKET', env.storage.s3.bucket],
+        ['S3_ENDPOINT', env.storage.s3.endpoint],
+        ['S3_ACCESS_KEY_ID', env.storage.s3.accessKeyId],
+        ['S3_SECRET_ACCESS_KEY', env.storage.s3.secretAccessKey],
+      ] as const
+    )
+      .filter(([, value]) => !value)
+      .map(([name]) => name);
+
+    if (missing.length > 0) {
+      problems.push(`STORAGE_DRIVER=s3 but ${missing.join(', ')} not set.`);
+    }
+    if (env.storage.s3.endpoint?.includes('r2.cloudflarestorage.com') && env.storage.s3.region !== 'auto') {
+      problems.push(
+        `S3_REGION is "${env.storage.s3.region}" but Cloudflare R2 signs with "auto" — ` +
+          'uploads will fail with SignatureDoesNotMatch.',
+      );
+    }
   }
   if (env.storage.driver === 'local') {
     problems.push(

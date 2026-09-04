@@ -24,12 +24,23 @@ export async function updateNoteAction(noteId: string, form: FormData): Promise<
     const existing = await prisma.note.findUnique({ where: { id: noteId } });
     if (!existing) throw Errors.notFound('That note no longer exists.');
 
+    // The form no longer offers a topic. A note filed under the older model may
+    // still have one, so it is carried over untouched rather than quietly
+    // cleared — unless the note is being moved to a different unit, where the
+    // old unit's topic genuinely no longer applies.
+    const submittedUnitId = value(form, 'unitId');
+    const topicId = form.has('topicId')
+      ? value(form, 'topicId')
+      : submittedUnitId === (existing.unitId ?? '')
+        ? (existing.topicId ?? '')
+        : '';
+
     const parsed = noteMetadataSchema.safeParse({
       title: value(form, 'title'),
       description: value(form, 'description'),
       subjectId: value(form, 'subjectId'),
-      unitId: value(form, 'unitId'),
-      topicId: value(form, 'topicId'),
+      unitId: submittedUnitId,
+      topicId,
       status: value(form, 'status') || 'PUBLISHED',
       visibility: value(form, 'visibility') || 'RESTRICTED',
       price: value(form, 'price') || '0',
@@ -40,9 +51,18 @@ export async function updateNoteAction(noteId: string, form: FormData): Promise<
     if (meta.unitId) {
       const unit = await prisma.unit.findFirst({
         where: { id: meta.unitId, subjectId: meta.subjectId },
-        select: { id: true },
+        select: { id: true, name: true, notes: { select: { id: true }, take: 1 } },
       });
       if (!unit) throw Errors.validation('That unit does not belong to the selected subject.');
+
+      // One unit, one PDF. Caught here so the admin gets a sentence rather than
+      // a unique-constraint error from the database.
+      const occupant = unit.notes[0];
+      if (occupant && occupant.id !== noteId) {
+        throw Errors.validation(
+          `“${unit.name}” already has a PDF. Replace that one, or move it out first.`,
+        );
+      }
     }
     if (meta.topicId) {
       if (!meta.unitId) throw Errors.validation('Pick a unit before choosing a topic.');

@@ -2,7 +2,13 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { env } from '@/lib/env';
 import { Errors, toErrorResponse } from '@/lib/errors';
 import { requireApiAdmin } from '@/lib/auth/guards';
-import { buildNoteKey, storage } from '@/lib/storage/index';
+import {
+  buildCoverKey,
+  buildNoteKey,
+  isCoverMimeType,
+  MAX_COVER_BYTES,
+  storage,
+} from '@/lib/storage/index';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,22 +32,45 @@ export async function POST(request: NextRequest) {
       fileName?: string;
       contentType?: string;
       size?: number;
+      /** "note" (a PDF: a note or a PYQ) or "cover" (a subject notebook image). */
+      kind?: string;
+      subjectId?: string;
     };
 
+    const kind = body.kind === 'cover' ? 'cover' : 'note';
     const contentType = body.contentType ?? 'application/pdf';
-    if (!env.uploads.allowedMimeTypes.includes(contentType as 'application/pdf')) {
-      throw Errors.validation('Only PDF files are supported right now.');
-    }
-    if (typeof body.size === 'number' && body.size > env.uploads.maxBytes) {
-      throw Errors.validation(`Files must be ${env.uploads.maxMb} MB or smaller.`);
+
+    // Two upload shapes, two rules. Everything else about the flow — presigned
+    // PUT, private bucket, server-side validation afterwards — is identical.
+    let key: string;
+    let maxBytes: number;
+
+    if (kind === 'cover') {
+      if (!isCoverMimeType(contentType)) {
+        throw Errors.validation('Covers must be a JPG, PNG or WebP image.');
+      }
+      if (!body.subjectId) throw Errors.validation('A cover needs a subject.');
+      maxBytes = MAX_COVER_BYTES;
+      if (typeof body.size === 'number' && body.size > maxBytes) {
+        throw Errors.validation('Cover images must be 5 MB or smaller.');
+      }
+      key = buildCoverKey(body.subjectId, contentType);
+    } else {
+      if (!env.uploads.allowedMimeTypes.includes(contentType as 'application/pdf')) {
+        throw Errors.validation('Only PDF files are supported right now.');
+      }
+      maxBytes = env.uploads.maxBytes;
+      if (typeof body.size === 'number' && body.size > maxBytes) {
+        throw Errors.validation(`Files must be ${env.uploads.maxMb} MB or smaller.`);
+      }
+      key = buildNoteKey(body.fileName ?? 'note.pdf');
     }
 
     const driver = storage();
     if (!driver.supportsDirectUpload || !driver.presignUpload) {
-      return NextResponse.json({ mode: 'proxy' as const, maxBytes: env.uploads.maxBytes });
+      return NextResponse.json({ mode: 'proxy' as const, maxBytes });
     }
 
-    const key = buildNoteKey(body.fileName ?? 'note.pdf');
     const url = await driver.presignUpload(key, contentType, 300);
 
     return NextResponse.json({
@@ -49,7 +78,7 @@ export async function POST(request: NextRequest) {
       key,
       url,
       headers: { 'Content-Type': contentType },
-      maxBytes: env.uploads.maxBytes,
+      maxBytes,
     });
   } catch (error) {
     return toErrorResponse(error);

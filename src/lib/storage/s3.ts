@@ -38,6 +38,26 @@ export class S3StorageDriver implements StorageDriver {
         accessKeyId: cfg.accessKeyId,
         secretAccessKey: cfg.secretAccessKey,
       },
+
+      /*
+       * Required for every S3-compatible store that is not AWS itself.
+       *
+       * From v3.729 the AWS SDK defaults these to WHEN_SUPPORTED, which adds a
+       * CRC32 integrity checksum to PutObject. That is fine for a normal upload,
+       * where the SDK sees the body — but a *presigned* PUT has no body at
+       * signing time, so the SDK computes the checksum of nothing and pins
+       * `x-amz-checksum-crc32=AAAAAA==` (the CRC32 of an empty payload) into the
+       * signed URL. The browser then uploads a real PDF, the checksum cannot
+       * match, and the store rejects the request.
+       *
+       * WHEN_REQUIRED restores the pre-3.729 behaviour: send a checksum only for
+       * operations that genuinely mandate one. It changes nothing about SigV4
+       * authentication, and integrity is still verified — the finalize route
+       * reads the object's header and size back out of storage before creating
+       * the note row.
+       */
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
     });
   }
 

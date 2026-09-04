@@ -3,9 +3,10 @@
  *
  *   npm run reset:catalog -- --yes
  *
- * Removes every semester, subject, unit, topic and note, and deletes the stored
- * PDF for each note and each retained note version. Use it to clear placeholder
- * or trial content before real material goes in.
+ * Removes every semester, subject, unit, topic, note and past paper, and deletes
+ * the stored file behind each one — note PDFs, retained note versions, PYQ PDFs
+ * and notebook cover images. Use it to clear placeholder or trial content before
+ * real material goes in.
  *
  * DELIBERATELY PRESERVED
  * ----------------------
@@ -86,13 +87,15 @@ async function deleteStoredObject(key: string): Promise<'deleted' | 'missing' | 
 }
 
 async function main() {
-  const [semesters, subjects, units, topics, notes, versions] = await Promise.all([
+  const [semesters, subjects, units, topics, notes, versions, pyqs, covers] = await Promise.all([
     prisma.semester.count(),
     prisma.subject.count(),
     prisma.unit.count(),
     prisma.topic.count(),
     prisma.note.count(),
     prisma.noteVersion.count(),
+    prisma.pyq.count(),
+    prisma.subject.count({ where: { coverStorageKey: { not: null } } }),
   ]);
 
   const [users, entitlements, noteEntitlements, orders, events, audits, noteViews] =
@@ -113,7 +116,9 @@ async function main() {
   row('Units', units);
   row('Topics', topics);
   row('Notes', notes);
-  row('Stored files', notes + versions);
+  row('Past papers', pyqs);
+  row('Notebook covers', covers);
+  row('Stored files', notes + versions + pyqs + covers);
   row('Note view records', noteViews);
   row('Note-scoped grants', `${noteEntitlements} (FK cascade)`);
 
@@ -125,7 +130,7 @@ async function main() {
   row('Audit entries', audits);
   console.log('─'.repeat(46));
 
-  if (semesters + subjects + units + topics + notes === 0) {
+  if (semesters + subjects + units + topics + notes + pyqs === 0) {
     console.log('\nThe catalogue is already empty. Nothing to do.\n');
     return;
   }
@@ -140,16 +145,26 @@ async function main() {
     }
   }
 
-  // 1. Collect every storage key before the rows go away.
+  // 1. Collect every storage key before the rows go away — notes, their retained
+  //    versions, past papers, and notebook covers. A key missed here becomes an
+  //    object nothing references and nothing will ever clean up.
   const keys = [
     ...(await prisma.note.findMany({ select: { storageKey: true } })).map((n) => n.storageKey),
     ...(await prisma.noteVersion.findMany({ select: { storageKey: true } })).map(
       (v) => v.storageKey,
     ),
+    ...(await prisma.pyq.findMany({ select: { storageKey: true } })).map((p) => p.storageKey),
+    ...(
+      await prisma.subject.findMany({
+        where: { coverStorageKey: { not: null } },
+        select: { coverStorageKey: true },
+      })
+    ).map((s) => s.coverStorageKey as string),
   ];
 
   // 2. Delete the rows. Semester cascades through subject → unit → topic → note,
   //    and note cascades to note_versions, note_views and note-scoped grants.
+  const deletedPyqs = await prisma.pyq.deleteMany({});
   const deletedNotes = await prisma.note.deleteMany({});
   const deletedTopics = await prisma.topic.deleteMany({});
   const deletedUnits = await prisma.unit.deleteMany({});
@@ -186,6 +201,8 @@ async function main() {
         units: deletedUnits.count,
         topics: deletedTopics.count,
         notes: deletedNotes.count,
+        pyqs: deletedPyqs.count,
+        covers,
         filesDeleted,
         filesMissing,
         filesFailed,
@@ -208,6 +225,8 @@ async function main() {
   row('Units', deletedUnits.count);
   row('Topics', deletedTopics.count);
   row('Notes', deletedNotes.count);
+  row('Past papers', deletedPyqs.count);
+  row('Notebook covers', covers);
   if (!KEEP_FILES) {
     row('Files removed', filesDeleted);
     if (filesMissing) row('Files already gone', filesMissing);

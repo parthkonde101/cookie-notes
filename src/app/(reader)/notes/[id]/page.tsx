@@ -24,12 +24,13 @@ export default async function NotePage({ params }: { params: Promise<{ id: strin
       title: true,
       subject: { select: { name: true, slug: true, code: true } },
       unit: { select: { name: true } },
-      topic: { select: { name: true } },
     },
   });
   if (!note) notFound();
 
-  const subtitle = [note.subject.code ?? note.subject.name, note.unit?.name, note.topic?.name]
+  // Subject, then unit. Nothing finer — a unit is one PDF, so there is no level
+  // below this to name.
+  const subtitle = [note.subject.code ?? note.subject.name, note.unit?.name]
     .filter(Boolean)
     .join(' · ');
 

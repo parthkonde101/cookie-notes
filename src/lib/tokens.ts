@@ -13,11 +13,21 @@ import { env } from '@/lib/env';
  */
 
 export interface ViewTokenPayload {
-  n: string; // note id
+  /**
+   * What the token authorises. A bare id is a note; a previous-year paper is
+   * namespaced with `pyq:` so a token minted for one kind of document can never
+   * be replayed against the other.
+   */
+  n: string;
   u: string; // user id
   s: string; // session id
   e: number; // expiry (unix seconds)
   j: string; // nonce
+}
+
+/** The token subject for a previous-year paper. */
+export function pyqTokenSubject(pyqId: string): string {
+  return `pyq:${pyqId}`;
 }
 
 const DEFAULT_TTL_SECONDS = 180;

@@ -51,11 +51,26 @@ export function GrantAccessForm({ catalog, fixedUser, students }: Props) {
         }
         for (const unit of subject.units) {
           if (scope === 'UNIT') {
-            result.push({ value: unit.id, label: `${subject.name} · ${unit.name}` });
+            result.push({
+              value: unit.id,
+              label: `${subject.name} · Unit ${unit.index} — ${unit.name}`,
+            });
             continue;
           }
-          for (const note of unit.notes) {
-            result.push({ value: note.id, label: `${subject.name} · ${unit.name} · ${note.title}` });
+          // One unit, one PDF — so a unit contributes at most one NOTE target,
+          // and a unit still waiting for its upload contributes none.
+          if (unit.note) {
+            result.push({
+              value: unit.note.id,
+              label: `${subject.name} · Unit ${unit.index} — ${unit.name}`,
+            });
+          }
+        }
+        // Notes filed under the older model, with no unit. Nothing creates
+        // these now, but they can still be granted individually.
+        if (scope === 'NOTE') {
+          for (const note of subject.looseNotes) {
+            result.push({ value: note.id, label: `${subject.name} · ${note.title}` });
           }
         }
       }

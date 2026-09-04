@@ -88,6 +88,27 @@ export const topicSchema = z.object({
   position: z.coerce.number().int().min(0).max(99).optional().default(0),
 });
 
+/**
+ * A new PDF going into a unit.
+ *
+ * Deliberately smaller than `noteMetadataSchema`: there is no title (it is taken
+ * from the unit) and no topic, and the unit is required — one unit, one PDF, so
+ * a PDF with nowhere to sit is not a thing the upload flow can produce.
+ */
+export const noteUploadSchema = z.object({
+  subjectId: z.string().min(1, 'Choose a subject.'),
+  unitId: z.string().min(1, 'Choose the unit this PDF belongs to.'),
+  status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).default('PUBLISHED'),
+  visibility: z.enum(['FREE', 'RESTRICTED']).default('RESTRICTED'),
+  /** Major units in the form (rupees); stored as minor units (paise). */
+  price: z.coerce.number().min(0).max(100000).optional().default(0),
+});
+
+/**
+ * Everything an existing note carries. Still accepts `title`, `description` and
+ * `topicId` because notes filed under the older model have them and the edit
+ * screen has to be able to repair those rows.
+ */
 export const noteMetadataSchema = z.object({
   title: z.string().trim().min(2, 'Give the note a title.').max(160),
   description: z.string().trim().max(1000).optional().or(z.literal('')),

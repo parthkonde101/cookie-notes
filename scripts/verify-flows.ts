@@ -9,6 +9,18 @@
  * `flowtest+…@scholarvault.test` prefix and are removed before each run.
  */
 import 'dotenv/config';
+
+// Cleanup removes the uploaded files as well as the rows, which means importing
+// the storage driver. Those modules are marked `server-only` and throw outside a
+// React Server Component, so the marker is neutralised before they load.
+const serverOnly = require.resolve('server-only');
+require.cache[serverOnly] = {
+  id: serverOnly,
+  filename: serverOnly,
+  loaded: true,
+  exports: {},
+} as NodeJS.Module;
+
 import bcrypt from 'bcryptjs';
 import { PrismaClient } from '../src/generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -126,6 +138,31 @@ async function body<T = Record<string, unknown>>(response: Response): Promise<T>
 // ---------------------------------------------------------------------------
 
 async function cleanup() {
+  // Delete the stored files before the rows that point at them. Deleting the
+  // rows first would leave the objects behind with nothing referencing them —
+  // harmless once, but this script runs often and uploads a handful of PDFs
+  // every time.
+  const doomed = await prisma.subject.findMany({
+    where: { name: { startsWith: '[verify]' } },
+    select: {
+      notes: { select: { storageKey: true, versions: { select: { storageKey: true } } } },
+      pyqs: { select: { storageKey: true } },
+    },
+  });
+  const keys = new Set<string>();
+  for (const subject of doomed) {
+    for (const note of subject.notes) {
+      keys.add(note.storageKey);
+      for (const version of note.versions) keys.add(version.storageKey);
+    }
+    for (const pyq of subject.pyqs) keys.add(pyq.storageKey);
+  }
+  if (keys.size > 0) {
+    const { storage } = await import('../src/lib/storage/index');
+    const driver = storage();
+    await Promise.all([...keys].map((key) => driver.delete(key).catch(() => {})));
+  }
+
   await prisma.user.deleteMany({ where: { email: { contains: `${PREFIX}+` } } });
   await prisma.note.deleteMany({ where: { title: { startsWith: '[verify]' } } });
   await prisma.subject.deleteMany({ where: { name: { startsWith: '[verify]' } } });
@@ -173,7 +210,12 @@ async function main() {
     },
   });
   const unit = await prisma.unit.create({
-    data: { subjectId: subject.id, name: 'Unit 1', position: 0 },
+    data: { subjectId: subject.id, name: '[verify] Unit 1 — Introduction', position: 0 },
+  });
+  // A second, deliberately empty unit: the catalogue has to show a unit with no
+  // PDF rather than hiding it.
+  const emptyUnit = await prisma.unit.create({
+    data: { subjectId: subject.id, name: '[verify] Unit 2 — Nothing here yet', position: 1 },
   });
 
   const studentA = new Client('studentA');
@@ -373,27 +415,37 @@ async function main() {
     check('an anonymous admin API call is refused', anonymousOnAdminApi.status === 401);
   }
 
-  // --- 7. Note upload ------------------------------------------------------
-  section('7. Note upload');
+  // --- 7. Upload: one unit, one PDF ----------------------------------------
+  section('7. Upload (one unit, one PDF)');
   let noteId = '';
   {
-    const pdf = makeTestPdf('[verify] Unit 1 — Introduction');
-    const form = new FormData();
-    form.append('title', '[verify] Unit 1 — Introduction');
-    form.append('description', 'Uploaded by the automated flow verification.');
-    form.append('subjectId', subject.id);
-    form.append('unitId', unit.id);
-    form.append('status', 'PUBLISHED');
-    form.append('visibility', 'RESTRICTED');
-    form.append('file', new Blob([new Uint8Array(pdf)], { type: 'application/pdf' }), 'verify.pdf');
+    const uploadTo = (unitId: string, fileName: string) => {
+      const form = new FormData();
+      form.append('subjectId', subject.id);
+      form.append('unitId', unitId);
+      form.append('status', 'PUBLISHED');
+      form.append('visibility', 'RESTRICTED');
+      form.append(
+        'file',
+        new Blob([new Uint8Array(makeTestPdf(fileName))], { type: 'application/pdf' }),
+        fileName,
+      );
+      return adminClient.request('/api/admin/notes', { method: 'POST', body: form });
+    };
 
-    const response = await adminClient.request('/api/admin/notes', { method: 'POST', body: form });
-    const data = await body<{ noteId?: string; error?: string }>(response);
-    check('admin can upload a PDF', response.status === 201, data.error);
+    const response = await uploadTo(unit.id, 'verify.pdf');
+    const data = await body<{ noteId?: string; error?: string; replaced?: boolean }>(response);
+    check('admin can upload a PDF into a unit', response.status === 201, data.error);
+    check('the first upload is reported as a creation', data.replaced === false);
     noteId = data.noteId ?? '';
 
     const note = noteId ? await prisma.note.findUnique({ where: { id: noteId } }) : null;
     check('the note row is created', Boolean(note));
+    check(
+      'no separate title was needed — the note takes the unit name',
+      note?.title === unit.name,
+      note?.title,
+    );
     check(
       'the file is stored under an opaque private key, not a public path',
       Boolean(note && note.storageKey.startsWith('notes/') && !note.storageKey.includes('public')),
@@ -401,16 +453,96 @@ async function main() {
     check('a checksum is recorded', Boolean(note?.checksum));
     check('version 1 is recorded in history', Boolean(note && note.version === 1));
 
+    // Uploading again to the same unit is a replacement, never a second note.
+    const again = await uploadTo(unit.id, 'verify-v2.pdf');
+    const againData = await body<{ noteId?: string; replaced?: boolean; error?: string }>(again);
+    check('re-uploading to the same unit succeeds', again.status === 200, againData.error);
+    check('and is reported as a replacement', againData.replaced === true);
+    check('and targets the same note', againData.noteId === noteId);
+
+    const afterReplace = await prisma.note.findMany({ where: { unitId: unit.id } });
+    check(
+      'the unit still holds exactly one note',
+      afterReplace.length === 1,
+      `${afterReplace.length} notes`,
+    );
+    check('the version was bumped', afterReplace[0]?.version === 2);
+    check('and the new file is the current one', afterReplace[0]?.fileName === 'verify-v2.pdf');
+
+    const versions = await prisma.noteVersion.count({ where: { noteId } });
+    check('the previous file is kept in version history', versions === 2, `${versions} versions`);
+
+    // The database — not just the application — enforces the rule.
+    const direct = await prisma.note
+      .create({
+        data: {
+          title: 'second note on the same unit',
+          subjectId: subject.id,
+          unitId: unit.id,
+          storageKey: 'notes/should-never-exist',
+          fileName: 'x.pdf',
+          fileSize: 1,
+        },
+      })
+      .then(() => null)
+      .catch((error: unknown) => error);
+    check('a second note on the same unit is rejected by the database', direct !== null);
+
     // A non-PDF must be rejected.
     const badForm = new FormData();
-    badForm.append('title', '[verify] Not a PDF');
     badForm.append('subjectId', subject.id);
+    badForm.append('unitId', emptyUnit.id);
     badForm.append('file', new Blob([new Uint8Array(Buffer.alloc(2048, 0x41))], { type: 'application/pdf' }), 'fake.pdf');
     const badResponse = await adminClient.request('/api/admin/notes', {
       method: 'POST',
       body: badForm,
     });
     check('a file that is not really a PDF is rejected', badResponse.status === 422);
+    check(
+      'and the unit it was aimed at is still empty',
+      (await prisma.note.count({ where: { unitId: emptyUnit.id } })) === 0,
+    );
+
+    // A PDF must land in a unit.
+    const noUnitForm = new FormData();
+    noUnitForm.append('subjectId', subject.id);
+    noUnitForm.append(
+      'file',
+      new Blob([new Uint8Array(makeTestPdf('[verify] no unit'))], { type: 'application/pdf' }),
+      'no-unit.pdf',
+    );
+    const noUnitResponse = await adminClient.request('/api/admin/notes', {
+      method: 'POST',
+      body: noUnitForm,
+    });
+    check('an upload with no unit is refused', noUnitResponse.status === 422);
+  }
+
+  // --- 7b. The unit is the item -------------------------------------------
+  section('7b. The notebook, as a student sees it');
+  {
+    const visitor = new Client('visitor2');
+    const page = await visitor.request(`/subject/${subject.slug}`);
+    const html = await page.text();
+
+    check('both units are listed', html.includes(unit.name) && html.includes(emptyUnit.name));
+    check(
+      'the unit with no PDF is shown as such rather than hidden',
+      html.includes('Not uploaded yet'),
+    );
+    check(
+      'the unit with a PDF links straight to the reader',
+      html.includes(`/notes/${noteId}`),
+      'no reader link found',
+    );
+    check(
+      'no file name, storage key or page count leaks onto the page',
+      !html.includes('.pdf') && !html.includes('notes/20'),
+    );
+    check(
+      'no topic level is rendered for students',
+      !/>\s*Topics?\s*</i.test(html),
+    );
   }
 
   if (!noteId) {

@@ -222,6 +222,68 @@ export async function assertNoteAccess(
   throw Errors.notFound('This note is not available on your account.');
 }
 
+/**
+ * The authoritative check for a previous-year paper.
+ *
+ * A PYQ belongs to a subject rather than to a unit or topic, so the rules are
+ * the note rules with the note-specific rungs removed: there is no per-PYQ
+ * entitlement scope and no FREE flag, and a grant covering the subject, its
+ * semester, or the whole catalogue is what opens it. Everything else — admin
+ * override, open-access mode, and the caller's session and view-token checks —
+ * behaves exactly as it does for notes.
+ */
+export async function checkPyqAccess(
+  userId: string,
+  role: 'STUDENT' | 'ADMIN',
+  pyqId: string,
+): Promise<AccessDecision> {
+  const pyq = await prisma.pyq.findUnique({
+    where: { id: pyqId },
+    select: {
+      id: true,
+      subjectId: true,
+      subject: { select: { semesterId: true, isArchived: true } },
+    },
+  });
+
+  if (!pyq) return { allowed: false, reason: 'not_found' };
+  if (role === 'ADMIN') return { allowed: true, reason: 'admin' };
+  // An archived subject is invisible to students, the way an unpublished note is.
+  if (pyq.subject.isArchived) return { allowed: false, reason: 'not_published' };
+
+  const candidates = [
+    targetKeyFor('ALL', null),
+    targetKeyFor('SEMESTER', pyq.subject.semesterId),
+    targetKeyFor('SUBJECT', pyq.subjectId),
+  ];
+
+  const now = new Date();
+  const match = await prisma.entitlement.findFirst({
+    where: {
+      userId,
+      targetKey: { in: candidates },
+      OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+    },
+    select: { targetKey: true },
+  });
+
+  if (match) return { allowed: true, reason: 'entitlement', via: match.targetKey };
+  if (openAccessGrantsNote()) return { allowed: true, reason: 'open_access' };
+
+  return { allowed: false, reason: 'no_entitlement' };
+}
+
+/** Throws the right HTTP error instead of returning a decision. */
+export async function assertPyqAccess(
+  userId: string,
+  role: 'STUDENT' | 'ADMIN',
+  pyqId: string,
+): Promise<void> {
+  const decision = await checkPyqAccess(userId, role, pyqId);
+  if (decision.allowed) return;
+  throw Errors.notFound('This paper is not available on your account.');
+}
+
 function candidateKeys(location: {
   noteId: string;
   unitId: string | null;
