@@ -128,6 +128,17 @@ enum EventType {
   ACCESS_REVOKED
   USER_MODIFIED
   CATALOG_MODIFIED
+  // note-ready notifications
+  UNIT_SUBSCRIBED
+  UNIT_UNSUBSCRIBED
+  NOTE_NOTIFICATION_SENT
+}
+
+/// Delivery state of one note-ready email to one recipient.
+enum NoteNotificationStatus {
+  PENDING
+  SENT
+  FAILED
 }
 
 enum AuditAction {
@@ -163,6 +174,9 @@ enum AuditAction {
   PYQ_REPLACED
   PYQ_DELETED
   SUBJECT_COVER_UPDATED
+  UNIT_BAKING_ENABLED
+  UNIT_BAKING_DISABLED
+  NOTE_NOTIFICATION_SENT
   CONFIG_CHANGED
 }
 
@@ -205,6 +219,8 @@ model User {
   noteViews           NoteView[]
   passwordResets      PasswordResetToken[]
   orders              Order[]
+  unitSubscriptions   UnitNotificationSubscription[]
+  noteNotifications   NoteNotification[]
 
   @@index([role, status])
   @@index([createdAt])
@@ -376,16 +392,86 @@ model Unit {
   name        String
   description String?
   position    Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
 
-  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  topics  Topic[]
-  notes   Note[]
+  /// "Being Baked": the notes for this unit are on the way.
+  ///
+  /// Only meaningful while the unit has no PDF. The upload flow clears it in the
+  /// same transaction that creates the note, and the admin action refuses to set
+  /// it on a unit that already has one, so `beingBaked && has a note` is a state
+  /// the database is never left in. `npm run db:verify` asserts that.
+  beingBaked Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subject       Subject                        @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  topics        Topic[]
+  notes         Note[]
+  subscriptions UnitNotificationSubscription[]
+  notifications NoteNotification[]
 
   @@unique([subjectId, name])
   @@index([subjectId, position])
+  @@index([beingBaked])
   @@map("units")
+}
+
+/// "Notify me": a student asked to hear when this unit's notes go live.
+///
+/// Created only by an explicit click — never by viewing a unit. The unique
+/// constraint is what makes the button a toggle rather than a way to queue up
+/// duplicate emails.
+model UnitNotificationSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  unitId    String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  unit Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, unitId])
+  @@index([unitId])
+  @@index([userId])
+  @@map("unit_notification_subscriptions")
+}
+
+/// One row per recipient per note-ready notification event.
+///
+/// This is the duplicate guard, not a mailbox. Rows are inserted *before*
+/// anything is sent, with `skipDuplicates`; only the rows that were actually
+/// created are then mailed. A retry of the same upload event therefore inserts
+/// nothing, finds nothing to send, and quietly does no work — which is what
+/// stops a double-submit or a re-run from mailing the whole cohort twice.
+///
+/// `eventKey` is "unit-ready:{unitId}:{noteVersionId}". Keying on the note
+/// *version* rather than the note means a genuine later replacement can notify
+/// again when an admin explicitly asks for it, while any retry of one upload
+/// stays deduplicated.
+model NoteNotification {
+  id       String @id @default(cuid())
+  eventKey String
+  unitId   String
+  noteId   String?
+  userId   String
+
+  status   NoteNotificationStatus @default(PENDING)
+  /// True when the recipient had asked to be notified about this unit.
+  viaSubscription Boolean @default(false)
+  attempts Int     @default(0)
+  error    String?
+
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  unit Unit  @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  note Note? @relation(fields: [noteId], references: [id], onDelete: SetNull)
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([eventKey, userId])
+  @@index([eventKey, status])
+  @@index([unitId, createdAt])
+  @@map("note_notifications")
 }
 
 model Topic {
@@ -442,14 +528,15 @@ model Note {
   publishedAt  DateTime?
   archivedAt   DateTime?
 
-  subject      Subject         @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  unit         Unit?           @relation(fields: [unitId], references: [id], onDelete: SetNull)
-  topic        Topic?          @relation(fields: [topicId], references: [id], onDelete: SetNull)
-  uploadedBy   User?           @relation("NoteUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
-  versions     NoteVersion[]
-  entitlements Entitlement[]
-  views        NoteView[]
-  events       ActivityEvent[]
+  subject       Subject            @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  unit          Unit?              @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  topic         Topic?             @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  uploadedBy    User?              @relation("NoteUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  versions      NoteVersion[]
+  entitlements  Entitlement[]
+  views         NoteView[]
+  events        ActivityEvent[]
+  notifications NoteNotification[]
 
   /// One unit, one PDF. Postgres treats NULLs as distinct in a unique index, so
   /// this constrains only notes that actually belong to a unit: each unit gets

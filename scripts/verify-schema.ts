@@ -30,6 +30,8 @@ const MODELS = [
   'note',
   'noteVersion',
   'pyq',
+  'unitNotificationSubscription',
+  'noteNotification',
   'entitlement',
   'order',
   'activityEvent',
@@ -122,6 +124,39 @@ async function main() {
     console.error(`  ✗ ${duplicates.length} unit(s) hold more than one note`);
   } else {
     console.log('  ✓ no unit holds more than one note');
+  }
+
+  // "Being Baked" means the notes are on the way, so it is meaningless — and
+  // visibly wrong to a student — on a unit that already has its PDF. The upload
+  // flow clears the flag server-side; this asserts that it really happened.
+  console.log('\nChecking the Being Baked invariant…');
+  const baked = await prisma.$queryRaw<{ id: string; name: string }[]>`
+    SELECT u.id, u."name"
+    FROM "units" u
+    WHERE u."beingBaked" = true
+      AND EXISTS (SELECT 1 FROM "notes" n WHERE n."unitId" = u.id)
+  `;
+  if (baked.length > 0) {
+    failures += 1;
+    console.error(
+      `  ✗ ${baked.length} unit(s) are flagged Being Baked while holding a PDF: ` +
+        baked.map((unit) => `${unit.name} (${unit.id})`).join(', '),
+    );
+  } else {
+    console.log('  ✓ no unit is Being Baked while it already has a PDF');
+  }
+
+  const orphanSubs = await prisma.$queryRaw<{ userId: string; unitId: string; n: bigint }[]>`
+    SELECT "userId", "unitId", COUNT(*) AS n
+    FROM "unit_notification_subscriptions"
+    GROUP BY "userId", "unitId"
+    HAVING COUNT(*) > 1
+  `;
+  if (orphanSubs.length > 0) {
+    failures += 1;
+    console.error(`  ✗ ${orphanSubs.length} duplicate notify-me subscription(s)`);
+  } else {
+    console.log('  ✓ no duplicate notify-me subscriptions');
   }
 
   if (failures > 0) {

@@ -502,6 +502,15 @@ async function main() {
       'and the unit it was aimed at is still empty',
       (await prisma.note.count({ where: { unitId: emptyUnit.id } })) === 0,
     );
+    // A failed upload must not reach the notification stage at all.
+    check(
+      'a rejected upload notifies nobody',
+      (await prisma.noteNotification.count({ where: { unitId: emptyUnit.id } })) === 0,
+    );
+    check(
+      'and an upload with no unit notifies nobody either',
+      (await prisma.noteNotification.count({ where: { unit: { subjectId: subject.id } } })) === 0,
+    );
 
     // A PDF must land in a unit.
     const noUnitForm = new FormData();
@@ -542,6 +551,219 @@ async function main() {
     check(
       'no topic level is rendered for students',
       !/>\s*Topics?\s*</i.test(html),
+    );
+  }
+
+  // --- 7c. Being Baked -----------------------------------------------------
+  section('7c. Being Baked');
+  {
+    const visitor = new Client('visitor3');
+
+    // Not flagged yet: the empty unit reads as plain "Not uploaded yet".
+    let html = await (await visitor.request(`/subject/${subject.slug}`)).text();
+    check('an unflagged empty unit shows "Not uploaded yet"', html.includes('Not uploaded yet'));
+    check('and does not claim to be baking', !html.includes('Being Baked'));
+
+    await prisma.unit.update({ where: { id: emptyUnit.id }, data: { beingBaked: true } });
+
+    html = await (await visitor.request(`/subject/${subject.slug}`)).text();
+    check('a flagged empty unit shows "Being Baked"', html.includes('Being Baked'));
+    check('with its supporting line', html.includes('Fresh notes are on the way'));
+    check('and offers a reminder', html.includes('Notify me'));
+    check('the unit number and title stay visible', html.includes(emptyUnit.name));
+
+    // Survives a reload — it is a column, not component state.
+    html = await (await visitor.request(`/subject/${subject.slug}`)).text();
+    check('the state survives a refresh', html.includes('Being Baked'));
+
+    // A unit that already has its PDF must never present as baking, even if the
+    // column were somehow set.
+    await prisma.unit.update({ where: { id: unit.id }, data: { beingBaked: true } });
+    html = await (await visitor.request(`/subject/${subject.slug}`)).text();
+    const bakingCount = (html.match(/Being Baked/g) ?? []).length;
+    check(
+      'a unit with a PDF never renders as baking',
+      bakingCount === 1,
+      `${bakingCount} "Being Baked" labels for 1 empty flagged unit`,
+    );
+    check('it still links to its reader', html.includes(`/notes/${noteId}`));
+    await prisma.unit.update({ where: { id: unit.id }, data: { beingBaked: false } });
+  }
+
+  // --- 7d. Notify me -------------------------------------------------------
+  section('7d. "Notify me" subscriptions');
+  {
+    const anonymous = new Client('anon-subscribe');
+    const anon = await anonymous.request(`/api/units/${emptyUnit.id}/subscribe`, { method: 'POST' });
+    check('an anonymous subscribe is refused', anon.status === 401, `status ${anon.status}`);
+    check(
+      'and no subscription is created',
+      (await prisma.unitNotificationSubscription.count({ where: { unitId: emptyUnit.id } })) === 0,
+    );
+
+    // studentB holds the live session for STUDENT_EMAIL by this point — the
+    // one-active-session test moved it there from studentA.
+    const subscribe = await studentB.request(`/api/units/${emptyUnit.id}/subscribe`, {
+      method: 'POST',
+    });
+    check('a signed-in student can subscribe', subscribe.status === 200, `status ${subscribe.status}`);
+
+    const student = await prisma.user.findUniqueOrThrow({ where: { email: STUDENT_EMAIL } });
+    let rows = await prisma.unitNotificationSubscription.findMany({
+      where: { unitId: emptyUnit.id },
+    });
+    check('exactly one subscription exists', rows.length === 1, `${rows.length}`);
+    check('and it belongs to that student', rows[0]?.userId === student.id);
+
+    // Subscribing again is the same subscription, not a second one.
+    await studentB.request(`/api/units/${emptyUnit.id}/subscribe`, { method: 'POST' });
+    rows = await prisma.unitNotificationSubscription.findMany({ where: { unitId: emptyUnit.id } });
+    check('subscribing twice does not duplicate', rows.length === 1, `${rows.length}`);
+
+    // The page reflects it for that student, and only for them.
+    const mine = await (await studentB.request(`/subject/${subject.slug}`)).text();
+    check('the student sees their reminder is set', /ll be notified/.test(mine));
+    const anonView = await (await new Client('visitor5').request(`/subject/${subject.slug}`)).text();
+    check(
+      'a signed-out visitor sees the plain invitation',
+      anonView.includes('Notify me') && !/ll be notified/.test(anonView),
+    );
+
+    // A genuinely different student, so ownership can be tested rather than
+    // assumed. Registering signs them in on their own session.
+    const second = new Client('subscriber2');
+    const secondEmail = `${PREFIX}+baker@scholarvault.test`;
+    await second.json('/api/auth/register', {
+      name: 'Second Student',
+      email: secondEmail,
+      password: PASSWORD,
+      confirmPassword: PASSWORD,
+    });
+    check('a second student has their own session', second.hasSession());
+    const secondUser = await prisma.user.findUniqueOrThrow({ where: { email: secondEmail } });
+
+    const theirs = await (await second.request(`/subject/${subject.slug}`)).text();
+    check(
+      'the second student does not inherit the first ones reminder',
+      theirs.includes('Notify me') && !/ll be notified/.test(theirs),
+    );
+
+    // One student cannot remove another's subscription.
+    await second.request(`/api/units/${emptyUnit.id}/subscribe`, { method: 'DELETE' });
+    rows = await prisma.unitNotificationSubscription.findMany({ where: { unitId: emptyUnit.id } });
+    check(
+      "one student's unsubscribe cannot remove another's",
+      rows.length === 1 && rows[0]?.userId === student.id,
+      `${rows.length} row(s)`,
+    );
+
+    await second.request(`/api/units/${emptyUnit.id}/subscribe`, { method: 'POST' });
+    rows = await prisma.unitNotificationSubscription.findMany({ where: { unitId: emptyUnit.id } });
+    check('a second student subscribes separately', rows.length === 2, `${rows.length}`);
+    check(
+      'each row is owned by its own user',
+      new Set(rows.map((row) => row.userId)).size === 2 &&
+        rows.some((row) => row.userId === secondUser.id),
+    );
+
+    // Unsubscribing removes only the caller's own row.
+    const remove = await second.request(`/api/units/${emptyUnit.id}/subscribe`, {
+      method: 'DELETE',
+    });
+    check('a student can unsubscribe', remove.status === 200);
+    rows = await prisma.unitNotificationSubscription.findMany({ where: { unitId: emptyUnit.id } });
+    check('only their own row is gone', rows.length === 1 && rows[0]?.userId === student.id);
+
+    // A unit that already has notes has nothing to wait for.
+    const already = await second.request(`/api/units/${unit.id}/subscribe`, { method: 'POST' });
+    check(
+      'subscribing to a unit that already has its PDF is refused',
+      already.status === 422,
+      `status ${already.status}`,
+    );
+  }
+
+  // --- 7e. Publishing a baking unit ---------------------------------------
+  section('7e. Publishing a unit that was being baked');
+  {
+    const before = await prisma.unit.findUniqueOrThrow({
+      where: { id: emptyUnit.id },
+      select: { beingBaked: true },
+    });
+    check('the unit is still flagged before upload', before.beingBaked === true);
+
+    const subscribersBefore = await prisma.unitNotificationSubscription.count({
+      where: { unitId: emptyUnit.id },
+    });
+
+    const form = new FormData();
+    form.append('subjectId', subject.id);
+    form.append('unitId', emptyUnit.id);
+    form.append('status', 'PUBLISHED');
+    form.append('visibility', 'RESTRICTED');
+    form.append(
+      'file',
+      new Blob([new Uint8Array(makeTestPdf('[verify] baked'))], { type: 'application/pdf' }),
+      'baked.pdf',
+    );
+    const response = await adminClient.request('/api/admin/notes', { method: 'POST', body: form });
+    const data = await body<{ noteId?: string; notified?: number; error?: string }>(response);
+    check('the upload succeeds', response.status === 201, data.error);
+
+    const after = await prisma.unit.findUniqueOrThrow({
+      where: { id: emptyUnit.id },
+      select: { beingBaked: true, notes: { select: { id: true } } },
+    });
+    check('Being Baked is cleared server-side by the upload', after.beingBaked === false);
+    check('the unit now has its PDF', after.notes.length === 1);
+
+    // Server-side means every reader agrees, not just the tab that uploaded.
+    const html = await (await new Client('visitor4').request(`/subject/${subject.slug}`)).text();
+    check('the student page no longer shows it as baking', !html.includes('Being Baked'));
+
+    check(
+      'the waiting subscriber was notified',
+      (data.notified ?? 0) === subscribersBefore,
+      `${data.notified} notified, ${subscribersBefore} subscriber(s)`,
+    );
+
+    const notifications = await prisma.noteNotification.findMany({
+      where: { unitId: emptyUnit.id },
+      select: { userId: true, viaSubscription: true },
+    });
+    check(
+      'one notification row per subscriber',
+      notifications.length === subscribersBefore,
+      `${notifications.length}`,
+    );
+    check(
+      'recorded as coming from a subscription',
+      notifications.every((row) => row.viaSubscription),
+    );
+
+    // A second identical upload is a replacement, and must not re-notify.
+    const replaceForm = new FormData();
+    replaceForm.append('subjectId', subject.id);
+    replaceForm.append('unitId', emptyUnit.id);
+    replaceForm.append('status', 'PUBLISHED');
+    replaceForm.append('visibility', 'RESTRICTED');
+    replaceForm.append(
+      'file',
+      new Blob([new Uint8Array(makeTestPdf('[verify] baked v2'))], { type: 'application/pdf' }),
+      'baked-v2.pdf',
+    );
+    const replaced = await adminClient.request('/api/admin/notes', {
+      method: 'POST',
+      body: replaceForm,
+    });
+    const replacedData = await body<{ replaced?: boolean; notified?: number }>(replaced);
+    check('the replacement succeeds', replaced.status === 200);
+    check('and is reported as a replacement', replacedData.replaced === true);
+    check('nobody is notified again', (replacedData.notified ?? 0) === 0);
+    check(
+      'and no extra notification rows appear',
+      (await prisma.noteNotification.count({ where: { unitId: emptyUnit.id } })) ===
+        notifications.length,
     );
   }
 

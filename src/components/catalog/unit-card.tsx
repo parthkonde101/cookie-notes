@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import { useAuthModal } from '@/components/auth/auth-modal';
 import { type CardAccessState } from '@/components/catalog/note-card';
+import { BakingCookie, NotifyMeButton } from '@/components/catalog/baking';
 import { cn } from '@/lib/utils';
 
 export interface UnitCardProps {
@@ -13,10 +14,20 @@ export interface UnitCardProps {
   description: string | null;
   /** The unit's PDF. `null` means nothing has been uploaded to this unit yet. */
   note: { id: string; access: CardAccessState } | null;
+  /** Needed only for the "Notify me" action while the unit is baking. */
+  unitId: string;
+  /** "Being Baked" — the notes are on the way. Never true alongside `note`. */
+  beingBaked?: boolean;
+  /** Whether the viewer has already asked to be notified about this unit. */
+  subscribed?: boolean;
 }
 
 /**
- * A unit, and the one PDF behind it.
+ * A unit, in one of its three states.
+ *
+ *   PDF uploaded        → a normal card you open
+ *   no PDF, baking      → "Being Baked", with a reminder you can ask for
+ *   no PDF, not baking  → "Not uploaded yet", inert
  *
  * One unit is one PDF, so the unit is the thing you open — there is no note
  * listed underneath it and no intermediate page. Clicking the card goes straight
@@ -24,9 +35,9 @@ export interface UnitCardProps {
  * upload date: none of it helps a student choose a unit, and all of it would
  * make the card look like a file browser.
  *
- * A unit with nothing uploaded is still shown, inert, so the notebook reads as
- * complete and a student can see what is still to come rather than wondering
- * whether a unit exists at all.
+ * A unit with nothing uploaded is still shown, so the notebook reads as complete
+ * and a student can see what is still to come rather than wondering whether a
+ * unit exists at all.
  *
  * Access is not decided here. `access` is a display hint computed on the server;
  * opening the note still runs the full authorisation chain. The card is a real
@@ -34,12 +45,23 @@ export interface UnitCardProps {
  * signed in gets the sign-in modal instead of a redirect they have to come back
  * from.
  */
-export function UnitCard({ index, name, description, note }: UnitCardProps) {
+export function UnitCard({
+  index,
+  name,
+  description,
+  note,
+  unitId,
+  beingBaked = false,
+  subscribed = false,
+}: UnitCardProps) {
   const { requestAuth } = useAuthModal();
 
   const access: CardAccessState | null = note?.access ?? null;
   const openable = access?.kind === 'open' || access?.kind === 'sign_in_required';
-  const inert = !openable;
+  // A baking unit is not openable, but it is not greyed out either — it is
+  // deliberately the most alive-looking of the two empty states.
+  const baking = !note && beingBaked;
+  const inert = !openable && !baking;
   const href = note ? `/notes/${note.id}` : '#';
 
   function onClick(event: React.MouseEvent) {
@@ -57,6 +79,9 @@ export function UnitCard({ index, name, description, note }: UnitCardProps) {
         'surface-interactive group relative flex h-full min-w-0 flex-col p-4',
         'focus-within:border-primary/50',
         inert && 'opacity-70 hover:border-border hover:shadow-none',
+        // Warm, not loud: a hint of the brand brown so a baking unit reads as
+        // "coming" rather than "broken", without competing with a real card.
+        baking && 'border-primary/30 bg-primary/[0.04] hover:border-primary/45',
       )}
     >
       <div className="flex items-start gap-3">
@@ -98,8 +123,33 @@ export function UnitCard({ index, name, description, note }: UnitCardProps) {
         </div>
       </div>
 
-      <div className="mt-auto flex items-center justify-end pt-4">
-        {note === null ? (
+      {/* Being Baked. The cookie is decorative; the words carry the state, so
+          nothing here depends on the animation being seen or running. */}
+      {baking && (
+        <div className="mt-3 flex items-center gap-2.5">
+          <BakingCookie />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-primary">Being Baked</p>
+            <p className="text-xs leading-snug text-muted-foreground">
+              Fresh notes are on the way…
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div
+        className={cn(
+          'mt-auto flex flex-wrap items-center gap-2 pt-4',
+          baking ? 'justify-start' : 'justify-end',
+        )}
+      >
+        {baking ? (
+          <NotifyMeButton
+            unitId={unitId}
+            unitLabel={`Unit ${index} — ${name}`}
+            subscribed={subscribed}
+          />
+        ) : note === null ? (
           <span className="rounded-md border border-dashed border-border px-2.5 py-1 text-xs text-muted-foreground">
             Not uploaded yet
           </span>

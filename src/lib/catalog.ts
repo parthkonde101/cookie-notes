@@ -41,6 +41,11 @@ export interface CatalogUnit {
   name: string;
   description: string | null;
   note: CatalogNote | null;
+  /**
+   * "Being Baked" — the notes are on the way. Only ever true while `note` is
+   * null; a unit that has its PDF is simply available.
+   */
+  beingBaked: boolean;
 }
 
 const PUBLISHED = { status: 'PUBLISHED' as const };
@@ -131,6 +136,7 @@ export async function subjectCatalog(slug: string) {
           id: true,
           name: true,
           description: true,
+          beingBaked: true,
           notes: {
             where: PUBLISHED,
             orderBy: { createdAt: 'asc' },
@@ -167,13 +173,19 @@ export async function subjectCatalog(slug: string) {
   // Every unit is returned, uploaded or not, so the notebook shows its real
   // shape. Ordering is the admin's — `position`, then name — never "the ones
   // with a PDF first", which would make unit numbers jump around.
-  const units: CatalogUnit[] = subject.units.map((unit, index) => ({
-    id: unit.id,
-    index: index + 1,
-    name: unit.name,
-    description: unit.description,
-    note: unit.notes[0] ? shape(unit.notes[0], unit.name) : null,
-  }));
+  const units: CatalogUnit[] = subject.units.map((unit, index) => {
+    const note = unit.notes[0] ? shape(unit.notes[0], unit.name) : null;
+    return {
+      id: unit.id,
+      index: index + 1,
+      name: unit.name,
+      description: unit.description,
+      note,
+      // A unit with its PDF is available, full stop — the flag cannot make an
+      // available unit read as "still baking".
+      beingBaked: note === null && unit.beingBaked,
+    };
+  });
 
   // Notes that belong to no unit. Nothing creates these any more — the upload
   // flow always attaches to a unit — but a catalogue built under the older model
@@ -216,6 +228,26 @@ interface RawNote {
   pageCount: number | null;
   createdAt: Date;
   unitId: string | null;
+}
+
+/**
+ * Which of these units the viewer has asked to be notified about.
+ *
+ * Kept out of `subjectCatalog` on purpose: the catalogue is identical for
+ * everyone, and this is the one piece of the page that is not. Returns an empty
+ * set for a signed-out visitor, so the button simply reads "Notify me" until
+ * they sign in.
+ */
+export async function subscribedUnitIds(
+  userId: string | null,
+  unitIds: string[],
+): Promise<Set<string>> {
+  if (!userId || unitIds.length === 0) return new Set();
+  const rows = await prisma.unitNotificationSubscription.findMany({
+    where: { userId, unitId: { in: unitIds } },
+    select: { unitId: true },
+  });
+  return new Set(rows.map((row) => row.unitId));
 }
 
 /**

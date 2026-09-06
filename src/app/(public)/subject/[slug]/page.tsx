@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/feedback';
 import { NoteCard, type CardAccessState } from '@/components/catalog/note-card';
 import { UnitCard } from '@/components/catalog/unit-card';
-import { subjectCatalog, type CatalogNote } from '@/lib/catalog';
+import { subjectCatalog, subscribedUnitIds, type CatalogNote } from '@/lib/catalog';
 import { optionalUser } from '@/lib/auth/guards';
 import { resolveNoteAccessStates } from '@/lib/access/entitlements';
 import { recordEvent } from '@/lib/analytics/events';
@@ -54,6 +54,13 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
     ...subject.looseNotes,
     ...subject.units.flatMap((unit) => (unit.note ? [unit.note] : [])),
   ];
+
+  // Only the units still waiting for a PDF can carry a reminder, so that is all
+  // we look up.
+  const subscribed = await subscribedUnitIds(
+    auth?.user.id ?? null,
+    subject.units.filter((unit) => unit.beingBaked).map((unit) => unit.id),
+  );
 
   const states = await resolveNoteAccessStates(
     auth ? { id: auth.user.id, role: auth.user.role } : null,
@@ -175,9 +182,12 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
                 {subject.units.map((unit) => (
                   <UnitCard
                     key={unit.id}
+                    unitId={unit.id}
                     index={unit.index}
                     name={unit.name}
                     description={unit.description}
+                    beingBaked={unit.beingBaked}
+                    subscribed={subscribed.has(unit.id)}
                     note={
                       unit.note
                         ? {

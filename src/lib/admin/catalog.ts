@@ -35,6 +35,10 @@ export interface CatalogUnit {
   description: string | null;
   /** The unit's one PDF, or null when nothing has been uploaded to it. */
   note: CatalogNote | null;
+  /** "Being Baked" — only ever true while `note` is null. */
+  beingBaked: boolean;
+  /** How many students asked to be told when this unit goes live. */
+  subscriberCount: number;
 }
 
 export interface CatalogPyq {
@@ -105,6 +109,10 @@ export async function loadCatalogTree(): Promise<CatalogSemester[]> {
               id: true,
               name: true,
               description: true,
+              beingBaked: true,
+              // A count, never the subscribers themselves: no student's identity
+              // or email reaches the catalogue UI.
+              _count: { select: { subscriptions: true } },
               // At most one — the database holds a unique index on
               // notes."unitId". The take is here so a database that somehow
               // predates that constraint still renders sanely.
@@ -123,13 +131,20 @@ export async function loadCatalogTree(): Promise<CatalogSemester[]> {
 
   return semesters.map((semester) => {
     const subjects = semester.subjects.map((subject) => {
-      const units: CatalogUnit[] = subject.units.map((unit, index) => ({
-        id: unit.id,
-        index: index + 1,
-        name: unit.name,
-        description: unit.description,
-        note: unit.notes[0] ? shapeNote(unit.notes[0]) : null,
-      }));
+      const units: CatalogUnit[] = subject.units.map((unit, index) => {
+        const note = unit.notes[0] ? shapeNote(unit.notes[0]) : null;
+        return {
+          id: unit.id,
+          index: index + 1,
+          name: unit.name,
+          description: unit.description,
+          note,
+          // Belt and braces against a row that predates the invariant: a unit
+          // holding a PDF never reads as being baked, whatever the column says.
+          beingBaked: note === null && unit.beingBaked,
+          subscriberCount: unit._count.subscriptions,
+        };
+      });
 
       const looseNotes = subject.notes.map(shapeNote);
       const uploaded = units.filter((unit) => unit.note !== null).length;

@@ -213,6 +213,78 @@
       transform: translateX(100%);
     }
   }
+
+  /*
+   * "Being Baked" — the unit whose notes are on the way.
+   *
+   * Deliberately small and slow: a cookie that breathes once every few seconds
+   * and two wisps of heat drifting off it. Everything animates `transform` and
+   * `opacity` only, so it composites on the GPU and never reflows; the cookie
+   * and the wisps both sit in a fixed-size box, so switching a unit into this
+   * state cannot shift the card around it.
+   */
+  .baking {
+    @apply relative flex size-9 shrink-0 items-center justify-center;
+  }
+
+  .baking-cookie {
+    animation: baking-breathe 3.2s ease-in-out infinite;
+    transform-origin: center 70%;
+  }
+
+  .baking-wisp {
+    @apply absolute left-1/2 top-0 h-2.5 w-px rounded-full;
+    background: linear-gradient(to top, hsl(var(--primary) / 0.55), transparent);
+    animation: baking-wisp 3.2s ease-in-out infinite;
+    opacity: 0;
+  }
+  .baking-wisp:nth-child(1) {
+    margin-left: -6px;
+  }
+  .baking-wisp:nth-child(2) {
+    margin-left: 4px;
+    animation-delay: 1.1s;
+  }
+
+  @keyframes baking-breathe {
+    0%,
+    100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.06);
+    }
+  }
+
+  @keyframes baking-wisp {
+    0% {
+      opacity: 0;
+      transform: translateY(2px) scaleY(0.6);
+    }
+    35% {
+      opacity: 0.9;
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(-7px) scaleY(1.15);
+    }
+  }
+
+  /*
+   * Someone who has asked for less motion still gets the whole message: the
+   * cookie, the "Being Baked" label and the badge are all static content. Only
+   * the movement stops — the wisps settle at a constant faint opacity rather
+   * than disappearing, so the composition is unchanged.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    .baking-cookie {
+      animation: none;
+    }
+    .baking-wisp {
+      animation: none;
+      opacity: 0.45;
+    }
+  }
 }
 
 @layer utilities {

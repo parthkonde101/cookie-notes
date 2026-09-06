@@ -1,8 +1,11 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useTransition } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import {
+  Bell,
   Check,
   ChevronRight,
   FilePlus2,
@@ -15,6 +18,8 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input, Select, Textarea } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { EmptyState } from '@/components/ui/feedback';
 import {
   Dialog,
@@ -34,6 +39,7 @@ import {
   deleteSemesterAction,
   deleteSubjectAction,
   deleteUnitAction,
+  setUnitBakingAction,
 } from '@/app/admin/_actions/catalog';
 import type { CatalogSemester, CatalogUnit, PlacementOption } from '@/lib/admin/catalog';
 import { cn, formatBytes, pluralize } from '@/lib/utils';
@@ -570,6 +576,111 @@ function UnitRow({
           )}
         </div>
       </div>
+
+      {/* Status controls, only while the unit is still waiting for its PDF.
+          Once the file is up there is nothing to promise and nobody left to
+          notify, so the row goes back to just the file. */}
+      {!note && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/60 pt-2">
+          <BakingToggle unit={unit} />
+          <SubscriberCount count={unit.subscriberCount} unitName={unit.name} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The per-unit "Being Baked" switch.
+ *
+ * Optimistic: the switch moves immediately and rolls back if the server refuses,
+ * because a status toggle that waits on a round trip feels broken. The server is
+ * still the authority — it rejects enabling on a unit that already has a PDF.
+ */
+function BakingToggle({ unit }: { unit: CatalogUnit }) {
+  const router = useRouter();
+  const [checked, setChecked] = useState(unit.beingBaked);
+  const [pending, startTransition] = useTransition();
+
+  // A refresh elsewhere (or another admin) is the source of truth.
+  useEffect(() => setChecked(unit.beingBaked), [unit.beingBaked]);
+
+  function onChange(next: boolean) {
+    const previous = checked;
+    setChecked(next);
+    startTransition(async () => {
+      const result = await setUnitBakingAction(unit.id, next);
+      if (!result.ok) {
+        setChecked(previous);
+        toast.error(result.error);
+        return;
+      }
+      if (result.message) toast.success(result.message);
+      router.refresh();
+    });
+  }
+
+  const id = `baking-${unit.id}`;
+  return (
+    <div className="flex items-center gap-2">
+      <Switch
+        id={id}
+        checked={checked}
+        disabled={pending}
+        onCheckedChange={onChange}
+        aria-label={`Being Baked — ${unit.name}`}
+      />
+      <Label htmlFor={id} className="cursor-pointer text-xs font-medium text-muted-foreground">
+        Being Baked
+      </Label>
+    </div>
+  );
+}
+
+/**
+ * How many students are waiting on this unit.
+ *
+ * Informational only — it sends nothing. The count is deliberately the whole
+ * story: no names, no email addresses, nothing that would turn the catalogue
+ * screen into a place where one student's interest is visible to anyone.
+ */
+function SubscriberCount({ count, unitName }: { count: number; unitName: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative flex items-center">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        aria-label={
+          count === 0
+            ? `No students are waiting for ${unitName}`
+            : `${count} ${count === 1 ? 'student is' : 'students are'} waiting for ${unitName}`
+        }
+        className={cn(
+          'inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs transition-colors',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          count > 0
+            ? 'text-foreground hover:bg-secondary'
+            : 'cursor-default text-muted-foreground/70',
+        )}
+        disabled={count === 0}
+      >
+        <Bell aria-hidden className="size-3.5" />
+        Notify
+        {count > 0 && <span className="tabular-nums">· {count}</span>}
+      </button>
+
+      {open && count > 0 && (
+        <span
+          role="status"
+          className="absolute left-0 top-full z-20 mt-1 w-max max-w-[min(16rem,70vw)] rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md"
+        >
+          {count} {count === 1 ? 'student' : 'students'} will be notified when this unit is
+          published.
+        </span>
+      )}
     </div>
   );
 }

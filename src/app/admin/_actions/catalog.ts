@@ -312,6 +312,70 @@ export async function createUnitAction(form: FormData): Promise<ActionResult> {
   }
 }
 
+/**
+ * Turns "Being Baked" on or off for one unit.
+ *
+ * The flag is only meaningful while the unit is empty, so enabling it on a unit
+ * that already holds a PDF is refused here rather than merely hidden in the UI —
+ * a stale admin screen or a direct call must not be able to create the state
+ * `has a PDF && beingBaked`. Turning it off is always allowed: that is simply
+ * the unit going back to "Not uploaded yet".
+ */
+export async function setUnitBakingAction(
+  unitId: string,
+  beingBaked: boolean,
+): Promise<ActionResult> {
+  try {
+    const { user: admin } = await requireApiAdmin();
+    const ctx = await requestContext();
+
+    const unit = await prisma.unit.findUnique({
+      where: { id: unitId },
+      select: {
+        id: true,
+        name: true,
+        beingBaked: true,
+        subject: { select: { name: true } },
+        notes: { select: { id: true }, take: 1 },
+      },
+    });
+    if (!unit) throw Errors.notFound('That unit no longer exists.');
+
+    if (beingBaked && unit.notes.length > 0) {
+      throw Errors.validation(
+        `“${unit.name}” already has a PDF, so it cannot be marked as being baked.`,
+      );
+    }
+
+    if (unit.beingBaked === beingBaked) {
+      return { ok: true };
+    }
+
+    await prisma.unit.update({ where: { id: unitId }, data: { beingBaked } });
+
+    await writeAudit({
+      action: beingBaked ? 'UNIT_BAKING_ENABLED' : 'UNIT_BAKING_DISABLED',
+      actorId: admin.id,
+      actorEmail: admin.email,
+      targetType: 'unit',
+      targetId: unit.id,
+      targetLabel: `${unit.subject.name} · ${unit.name}`,
+      ctx,
+    });
+
+    revalidatePath('/admin/notes');
+    revalidatePath('/');
+    return {
+      ok: true,
+      message: beingBaked
+        ? `“${unit.name}” is now being baked.`
+        : `“${unit.name}” is back to not uploaded.`,
+    };
+  } catch (error) {
+    return toActionError(error);
+  }
+}
+
 export async function deleteUnitAction(id: string): Promise<ActionResult> {
   try {
     const { user: admin } = await requireApiAdmin();

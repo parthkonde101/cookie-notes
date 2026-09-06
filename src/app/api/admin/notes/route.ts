@@ -6,6 +6,7 @@ import { requireApiAdmin } from '@/lib/auth/guards';
 import { ingestPdfUpload } from '@/lib/notes/ingest';
 import { recordEvent } from '@/lib/analytics/events';
 import { writeAudit } from '@/lib/audit';
+import { notifyNoteReady, type NotifyNoteReadyResult } from '@/lib/notes/notifications';
 import { firstError, noteUploadSchema } from '@/lib/validation';
 
 export const runtime = 'nodejs';
@@ -46,6 +47,9 @@ export async function POST(request: NextRequest) {
     if (!parsed.success) throw Errors.validation(firstError(parsed.error));
     const meta = parsed.data;
 
+    // Opt-in, off unless the admin ticked the box in the upload dialog.
+    const notifyAll = String(form.get('notifyAll') ?? '') === 'true';
+
     // The unit must exist and belong to the chosen subject — a client is never
     // trusted to have sent a matching pair.
     const unit = await prisma.unit.findFirst({
@@ -70,8 +74,8 @@ export async function POST(request: NextRequest) {
     if (existing) {
       // --- replacement ---
       const nextVersion = existing.version + 1;
-      const note = await prisma.$transaction(async (tx) => {
-        await tx.noteVersion.create({
+      const { note, version } = await prisma.$transaction(async (tx) => {
+        const created = await tx.noteVersion.create({
           data: {
             noteId: existing.id,
             version: nextVersion,
@@ -81,8 +85,9 @@ export async function POST(request: NextRequest) {
             checksum,
             createdById: admin.id,
           },
+          select: { id: true },
         });
-        return tx.note.update({
+        const updated = await tx.note.update({
           where: { id: existing.id },
           data: {
             title: unit.name,
@@ -106,6 +111,7 @@ export async function POST(request: NextRequest) {
           },
           select: { id: true, title: true },
         });
+        return { note: updated, version: created };
       });
 
       await writeAudit({
@@ -127,31 +133,62 @@ export async function POST(request: NextRequest) {
         metadata: { version: nextVersion, fileSize },
       });
 
-      return NextResponse.json({ ok: true, noteId: note.id, replaced: true });
+      // Replacing an existing PDF is not a "notes are ready" moment — the notes
+      // were already there — so subscribers are deliberately NOT notified on
+      // their own. Only an explicit "Notify all users" tick sends anything.
+      const notified = notifyAll
+        ? await notifySafely({
+            unitId: unit.id,
+            noteId: note.id,
+            noteVersionId: version.id,
+            notifyAll: true,
+            notifySubscribers: false,
+            actor: admin,
+            ctx,
+          })
+        : null;
+
+      return NextResponse.json({
+        ok: true,
+        noteId: note.id,
+        replaced: true,
+        notified: notified?.sent ?? 0,
+        notifyFailures: notified?.failed ?? 0,
+      });
     }
 
     // --- first upload for this unit ---
-    const note = await prisma.note.create({
-      data: {
-        title: unit.name,
-        subjectId: meta.subjectId,
-        unitId: unit.id,
-        status: meta.status,
-        visibility: meta.visibility,
-        priceMinor,
-        storageKey,
-        fileName,
-        fileSize,
-        checksum,
-        pageCount,
-        mimeType: 'application/pdf',
-        uploadedById: admin.id,
-        publishedAt: meta.status === 'PUBLISHED' ? new Date() : null,
-        versions: {
-          create: { version: 1, storageKey, fileName, fileSize, checksum, createdById: admin.id },
+    //
+    // The note and the clearing of "Being Baked" commit together. A unit is
+    // therefore never observable — by a refresh, another browser, a direct API
+    // call or the admin screen — as holding a PDF while still flagged as baking.
+    const { note, versionId } = await prisma.$transaction(async (tx) => {
+      const created = await tx.note.create({
+        data: {
+          title: unit.name,
+          subjectId: meta.subjectId,
+          unitId: unit.id,
+          status: meta.status,
+          visibility: meta.visibility,
+          priceMinor,
+          storageKey,
+          fileName,
+          fileSize,
+          checksum,
+          pageCount,
+          mimeType: 'application/pdf',
+          uploadedById: admin.id,
+          publishedAt: meta.status === 'PUBLISHED' ? new Date() : null,
+          versions: {
+            create: { version: 1, storageKey, fileName, fileSize, checksum, createdById: admin.id },
+          },
         },
-      },
-      select: { id: true, title: true },
+        select: { id: true, title: true, versions: { select: { id: true }, take: 1 } },
+      });
+
+      await tx.unit.update({ where: { id: unit.id }, data: { beingBaked: false } });
+
+      return { note: created, versionId: created.versions[0]?.id ?? created.id };
     });
 
     await writeAudit({
@@ -179,8 +216,57 @@ export async function POST(request: NextRequest) {
       metadata: { fileSize },
     });
 
-    return NextResponse.json({ ok: true, noteId: note.id, replaced: false }, { status: 201 });
+    // NO PDF → PDF AVAILABLE. This is the only transition that notifies
+    // subscribers on its own; "Notify all" widens the audience but is not what
+    // makes it a notifiable moment.
+    //
+    // Reached only after the transaction above committed, so a storage failure
+    // or a failed write has already thrown and nobody has been mailed.
+    const notified = await notifySafely({
+      unitId: unit.id,
+      noteId: note.id,
+      noteVersionId: versionId,
+      notifyAll,
+      notifySubscribers: true,
+      actor: admin,
+      ctx,
+    });
+
+    return NextResponse.json(
+      {
+        ok: true,
+        noteId: note.id,
+        replaced: false,
+        notified: notified?.sent ?? 0,
+        notifyFailures: notified?.failed ?? 0,
+      },
+      { status: 201 },
+    );
   } catch (error) {
     return toErrorResponse(error);
+  }
+}
+
+/**
+ * Dispatches note-ready mail without ever putting the upload at risk.
+ *
+ * The note is already published by the time this runs. If the mail provider is
+ * down, misconfigured or throws, that is logged and the request still succeeds:
+ * an admin who uploaded a PDF has uploaded a PDF, whatever the email service
+ * thinks. Per-recipient failures are recorded on their notification rows.
+ */
+async function notifySafely(
+  input: Parameters<typeof notifyNoteReady>[0],
+): Promise<NotifyNoteReadyResult | null> {
+  try {
+    return await notifyNoteReady(input);
+  } catch (error) {
+    console.error(
+      '[notify] note-ready dispatch failed for unit',
+      input.unitId,
+      '— the note is published and unaffected:',
+      error instanceof Error ? error.message : error,
+    );
+    return null;
   }
 }

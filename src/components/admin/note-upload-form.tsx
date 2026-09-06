@@ -47,6 +47,7 @@ export function NoteUploadForm({
   const [file, setFile] = useState<File | null>(null);
   const [subjectId, setSubjectId] = useState(defaultSubjectId ?? placements[0]?.subjectId ?? '');
   const [unitId, setUnitId] = useState(defaultUnitId ?? '');
+  const [notifyAll, setNotifyAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [pending, setPending] = useState(false);
@@ -140,12 +141,29 @@ export function NoteUploadForm({
         error?: string;
         noteId?: string;
         replaced?: boolean;
+        notified?: number;
+        notifyFailures?: number;
       };
 
       if (!response.ok) throw new Error(data.error ?? 'The upload failed.');
 
-      toast.success(data.replaced ? 'PDF replaced.' : 'PDF uploaded.');
+      const base = data.replaced ? 'PDF replaced.' : 'PDF uploaded.';
+      toast.success(
+        data.notified
+          ? `${base} ${data.notified} ${data.notified === 1 ? 'student' : 'students'} notified.`
+          : base,
+      );
+      // The note is published either way; a delivery problem is the mail
+      // provider's, not the upload's, and says so.
+      if (data.notifyFailures) {
+        toast.error(
+          `${data.notifyFailures} notification ${
+            data.notifyFailures === 1 ? 'email' : 'emails'
+          } could not be sent. The note is published — check the server log.`,
+        );
+      }
       setFile(null);
+      setNotifyAll(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
       router.refresh();
       onUploaded?.(data.noteId ?? '');
@@ -315,6 +333,34 @@ export function NoteUploadForm({
           <Input id="price" name="price" type="number" min={0} step={1} defaultValue={0} />
         </Field>
       </div>
+
+      {/* Opt-in, and off every time the dialog opens — a mass email is never
+          something to send by muscle memory. Subscribers to a unit getting its
+          first PDF are mailed regardless; this widens that to everyone. */}
+      <label
+        htmlFor="notifyAll"
+        className="flex cursor-pointer items-start gap-2.5 rounded-md border border-border p-3 transition-colors hover:bg-secondary/40"
+      >
+        <input
+          id="notifyAll"
+          name="notifyAll"
+          type="checkbox"
+          value="true"
+          checked={notifyAll}
+          onChange={(event) => setNotifyAll(event.target.checked)}
+          className="mt-0.5 size-4 shrink-0 accent-primary"
+        />
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">
+            Notify all users when this note is ready
+          </span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">
+            {unit?.hasNote
+              ? 'This is a replacement, so nobody is emailed unless you tick this.'
+              : 'Students who asked to be notified about this unit are emailed either way. Each person receives one email.'}
+          </span>
+        </span>
+      </label>
 
       <Button type="submit" size="lg" loading={pending} disabled={!file || units.length === 0}>
         {unit?.hasNote ? 'Replace PDF' : 'Upload PDF'}
