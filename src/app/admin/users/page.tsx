@@ -9,6 +9,7 @@ import { EmptyState } from '@/components/ui/feedback';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { PageContainer, PageHeader } from '@/components/layout/page-header';
 import { ActionForm, Field } from '@/components/admin/action-form';
+import { StatCard } from '@/components/admin/stat-card';
 import { createUserAction } from '@/app/admin/_actions/users';
 import { prisma } from '@/lib/prisma';
 import { requireAdmin } from '@/lib/auth/guards';
@@ -68,6 +69,7 @@ export default async function AdminUsersPage({
         semester: true,
         lastLoginAt: true,
         createdAt: true,
+        emailVerifiedAt: true,
         _count: { select: { entitlements: true, noteViews: true } },
       },
     }),
@@ -87,6 +89,16 @@ export default async function AdminUsersPage({
   });
   const live = new Set(liveRows.map((row) => row.userId));
 
+  // How far the college-email migration has got. Counts only — no addresses,
+  // no names, nothing about who is behind the numbers.
+  const [studentTotal, studentVerified] = await Promise.all([
+    prisma.user.count({ where: { role: 'STUDENT', status: 'ACTIVE', deletedAt: null } }),
+    prisma.user.count({
+      where: { role: 'STUDENT', status: 'ACTIVE', deletedAt: null, emailVerifiedAt: { not: null } },
+    }),
+  ]);
+  const studentRemaining = Math.max(0, studentTotal - studentVerified);
+
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -95,6 +107,30 @@ export default async function AdminUsersPage({
         title="Users"
         description={`${total} account${total === 1 ? '' : 's'} in this view. Open one to manage its access.`}
       />
+
+      {/* Legacy email verification, as three numbers. Enough to tell whether
+          the migration is progressing, without becoming a dashboard. */}
+      <section className="mt-6">
+        <h2 className="text-sm font-medium text-muted-foreground">Legacy email verification</h2>
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <StatCard
+            label="Total requiring verification"
+            value={studentTotal}
+            hint="Active student accounts"
+          />
+          <StatCard
+            label="Verified"
+            value={studentVerified}
+            tone={studentRemaining === 0 ? 'success' : undefined}
+            hint="Completed the MIT-WPU check"
+          />
+          <StatCard
+            label="Remaining"
+            value={studentRemaining}
+            hint="Prompted at their next sign-in"
+          />
+        </div>
+      </section>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_320px]">
         <div className="min-w-0 space-y-4">
@@ -165,6 +201,12 @@ export default async function AdminUsersPage({
                             {user.status.toLowerCase()}
                           </Badge>
                           {user.role === 'ADMIN' && <Badge>admin</Badge>}
+                          {user.role === 'STUDENT' &&
+                            (user.emailVerifiedAt ? (
+                              <Badge variant="success">email verified</Badge>
+                            ) : (
+                              <Badge variant="warning">needs email</Badge>
+                            ))}
                           {live.has(user.id) && <Badge variant="secondary">online</Badge>}
                         </div>
                       </TableCell>

@@ -10,15 +10,99 @@ export const emailSchema = z
   .email('Enter a valid email address.')
   .transform((value) => value.toLowerCase());
 
+// ---------------------------------------------------------------------------
+// College email policy
+// ---------------------------------------------------------------------------
+
+/**
+ * The only domain new student accounts may use.
+ *
+ * Compared for exact equality after canonicalisation — never with `includes`
+ * or `endsWith`. A substring test would admit `fake-mitwpu.edu.in`, and
+ * `endsWith` would admit `notmitwpu.edu.in`; both look like the real thing to a
+ * careless check and neither is the university.
+ */
+export const STUDENT_EMAIL_DOMAIN = 'mitwpu.edu.in';
+
+/**
+ * Canonical email comparison policy.
+ *
+ * The address is trimmed and lowercased in full — including the local part.
+ * Lowercasing the local part is technically a transformation the RFC does not
+ * require, and it is done here for one specific reason: `emailSchema` has
+ * always done it, so every address already in the database is stored that way
+ * and `users.email` is unique on that basis. Changing it now would strand
+ * existing accounts, so the existing policy is kept and made explicit rather
+ * than quietly revised.
+ *
+ * No provider-specific handling is applied: dots are not stripped, `+tags` are
+ * not removed. Two addresses that differ in those ways are different accounts.
+ *
+ * The domain is whatever follows the LAST `@`, because that is the only part a
+ * mail server routes on.
+ */
+export function canonicalEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function emailDomain(value: string): string {
+  const at = canonicalEmail(value).lastIndexOf('@');
+  return at === -1 ? '' : canonicalEmail(value).slice(at + 1);
+}
+
+export function isStudentEmail(value: string): boolean {
+  return emailDomain(value) === STUDENT_EMAIL_DOMAIN;
+}
+
+/**
+ * Email for a NEW student registration.
+ *
+ * Deliberately separate from `emailSchema`. The shared schema is used by login
+ * and password reset, and adding the domain rule there would lock out every
+ * account that predates this policy — including the admin — the moment it
+ * shipped. The restriction belongs to sign-up alone.
+ */
+export const studentEmailSchema = emailSchema.refine(isStudentEmail, {
+  message: `Use your MIT-WPU email address (@${STUDENT_EMAIL_DOMAIN}).`,
+});
+
 export const passwordSchema = z
   .string()
   .min(10, 'Password must be at least 10 characters.')
   .max(128, 'Password is too long.');
 
+/** A six-digit verification code, as typed (spaces and dashes forgiven). */
+export const otpCodeSchema = z
+  .string()
+  .trim()
+  .transform((value) => value.replace(/[\s-]/g, ''))
+  .pipe(z.string().regex(/^\d{6}$/, 'Enter the 6-digit code from your email.'));
+
+/**
+ * A new student account.
+ *
+ * Name, college email, password. That is the whole identity requirement.
+ *
+ * Two things were deliberately removed rather than made optional:
+ *
+ * PRN, because nothing in the product uses it — it was self-declared, proved
+ * nothing, and asking for a student number the application then ignores is
+ * collecting personal data for no reason.
+ *
+ * The terms and data-use checkboxes, because their wording has not been
+ * professionally reviewed. A checkbox that says "I agree to the Terms" when
+ * there are no approved terms records an agreement to nothing; it would be
+ * worse than not asking. The columns stay in the database, NULL, until a
+ * reviewed notice exists.
+ *
+ * Every rule here is enforced on the server. The form mirrors them for a decent
+ * experience, but a request posted straight to the API meets exactly the same
+ * schema — a disabled button is not a control.
+ */
 export const registerSchema = z
   .object({
     name: z.string().trim().min(2, 'Enter your full name.').max(80),
-    email: emailSchema,
+    email: studentEmailSchema,
     password: passwordSchema,
     confirmPassword: z.string(),
     college: z.string().trim().max(120).optional().or(z.literal('')),
@@ -35,6 +119,37 @@ export const loginSchema = z.object({
   password: z.string().min(1, 'Enter your password.'),
   /** Set when the user confirms "sign out my other device and continue". */
   force: z.boolean().optional().default(false),
+  /**
+   * "Keep me signed in". Only ever a boolean — the lifetime it maps to is a
+   * server constant, never something the client can name.
+   */
+  rememberMe: z.boolean().optional().default(false),
+});
+
+/** Submitting a code, or asking for another one. */
+export const verifyEmailSchema = z.object({
+  email: emailSchema,
+  code: otpCodeSchema,
+});
+
+export const resendCodeSchema = z.object({
+  email: emailSchema,
+});
+
+/**
+ * An existing student moving to a college address.
+ *
+ * Only the NEW address is constrained — the account's current one may be on any
+ * domain, which is the entire reason this migration exists. There is no user
+ * identifier here on purpose: the account being changed comes from the session,
+ * never from the request.
+ */
+export const requestEmailChangeSchema = z.object({
+  email: studentEmailSchema,
+});
+
+export const confirmEmailChangeSchema = z.object({
+  code: otpCodeSchema,
 });
 
 export const forgotPasswordSchema = z.object({ email: emailSchema });

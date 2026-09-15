@@ -63,7 +63,33 @@ export const env = {
     get idleMinutes() {
       return num('SESSION_IDLE_MINUTES', 30);
     },
+    /**
+     * Lifetime of a "Keep me signed in" session, used as BOTH its absolute
+     * lifetime and its idle window — a remembered session is one that simply
+     * lives this long unless it is ended.
+     *
+     * This is an authentication lifetime and nothing else. It has no bearing on
+     * who counts as an Active User; that is `liveWindowMinutes`, below, and the
+     * two are kept deliberately independent.
+     */
+    get rememberDays() {
+      return num('SESSION_REMEMBER_DAYS', 30);
+    },
     cookieName: 'sv_session',
+  },
+
+  /**
+   * Which revision of the terms and of the analytics notice a student is
+   * agreeing to. Recorded per user at sign-up, so a later revision can be told
+   * apart from the text someone actually saw.
+   */
+  consent: {
+    get termsVersion() {
+      return process.env.TERMS_VERSION ?? '2026-09-01';
+    },
+    get analyticsVersion() {
+      return process.env.ANALYTICS_CONSENT_VERSION ?? '2026-09-01';
+    },
   },
 
   /** Recency window that counts a user as "studying right now". */
@@ -212,5 +238,32 @@ export function productionConfigWarnings(): string[] {
   if (!env.appUrl.startsWith('https://')) {
     problems.push('APP_URL should be an https:// URL in production.');
   }
+
+  // Mail. Previously unchecked, which is how a misconfigured driver could turn
+  // every password reset into a line in a log nobody reads. Registration now
+  // depends on mail actually leaving the building — an undelivered verification
+  // code means nobody can create an account at all — so this is worth shouting
+  // about at boot rather than discovering from a support message.
+  if (env.mail.driver !== 'resend') {
+    problems.push(
+      'MAIL_DRIVER is not "resend" in production — password resets and sign-up ' +
+        'verification codes will be printed to the log instead of emailed, so no ' +
+        'student will be able to register or recover their account.',
+    );
+  } else {
+    if (!env.mail.resendApiKey) {
+      problems.push('MAIL_DRIVER=resend but RESEND_API_KEY is not set — no email will be sent.');
+    }
+    if (!process.env.MAIL_FROM) {
+      problems.push(
+        'MAIL_FROM is not set — the default example.com sender will be rejected by Resend.',
+      );
+    } else if (/@example\.(com|org|net)>?\s*$/i.test(env.mail.from)) {
+      problems.push(
+        'MAIL_FROM points at example.com — use a sender on a domain verified with Resend.',
+      );
+    }
+  }
+
   return problems;
 }

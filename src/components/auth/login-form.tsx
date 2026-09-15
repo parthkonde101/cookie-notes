@@ -31,10 +31,19 @@ const REASON_MESSAGES: Record<string, string> = {
   disabled: 'This account has been disabled. Contact support if you think that is a mistake.',
 };
 
-export function LoginForm({ reason, next }: { reason?: string; next?: string }) {
+export function LoginForm({
+  reason,
+  next,
+  verified,
+}: {
+  reason?: string;
+  next?: string;
+  verified?: boolean;
+}) {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState<string | null>(reason ? REASON_MESSAGES[reason] ?? null : null);
   const [pending, setPending] = useState(false);
   const [conflict, setConflict] = useState<ConflictDetails | null>(null);
@@ -49,7 +58,7 @@ export function LoginForm({ reason, next }: { reason?: string; next?: string }) 
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, force }),
+        body: JSON.stringify({ email, password, force, rememberMe }),
       });
 
       const data = await response.json().catch(() => ({}) as Record<string, unknown>);
@@ -85,6 +94,9 @@ export function LoginForm({ reason, next }: { reason?: string; next?: string }) 
           void submit(false);
         }}
       >
+        {verified && !error && (
+          <Alert variant="success">Email verified. Sign in to get started.</Alert>
+        )}
         {error && <Alert variant="error">{error}</Alert>}
 
         <div className="space-y-2">
@@ -124,6 +136,24 @@ export function LoginForm({ reason, next }: { reason?: string; next?: string }) 
             aria-invalid={Boolean(error)}
           />
         </div>
+
+        {/* Lifetime only. Activity is still measured by the heartbeat, so
+            staying signed in does not make anyone look like they are online. */}
+        <label
+          htmlFor="rememberMe"
+          className="flex cursor-pointer items-center gap-2.5 text-sm text-foreground/90"
+        >
+          <input
+            id="rememberMe"
+            name="rememberMe"
+            type="checkbox"
+            checked={rememberMe}
+            disabled={pending || forcing}
+            onChange={(event) => setRememberMe(event.target.checked)}
+            className="size-4 shrink-0 accent-primary"
+          />
+          Keep me signed in
+        </label>
 
         <Button type="submit" className="w-full" size="lg" loading={pending}>
           {pending ? 'Signing in…' : 'Sign in'}

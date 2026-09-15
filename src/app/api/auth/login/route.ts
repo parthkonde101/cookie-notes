@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
     const parsed = loginSchema.safeParse(body);
     if (!parsed.success) throw Errors.validation(firstError(parsed.error));
 
-    const { email, password, force } = parsed.data;
+    const { email, password, force, rememberMe } = parsed.data;
 
     // Two limiters: one per network, one per account, so neither a single IP
     // nor a single account can be hammered.
@@ -110,6 +110,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // --- Email verification -------------------------------------------------
+    // Only accounts created under the verification policy are gated. Every
+    // account that predates it has `verificationRequired = false` — set by the
+    // column default, without a single row being rewritten — so existing
+    // students and admins sign in exactly as they did yesterday, whatever
+    // domain their email is on.
+    //
+    // Checked after the password so this cannot be used to probe which
+    // addresses are registered: a wrong password fails first, identically.
+    if (user.verificationRequired && !user.emailVerifiedAt) {
+      await recordEvent({
+        type: 'LOGIN_BLOCKED',
+        userId: user.id,
+        ctx,
+        metadata: { reason: 'email_unverified' },
+      });
+      throw Errors.forbidden(
+        'Please verify your email address first. Check your inbox for the code we sent you.',
+        'email_unverified',
+      );
+    }
+
     // --- One account, one active session -----------------------------------
     // Clean up anything that has drifted past its inactivity window first, so a
     // forgotten browser tab never locks a student out of their own account.
@@ -143,9 +165,9 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const { session, token } = await createSession(user.id, ctx);
-    await setSessionCookie(token);
-    await setRoleHintCookie(user.role);
+    const { session, token } = await createSession(user.id, ctx, { rememberMe });
+    await setSessionCookie(token, { rememberMe });
+    await setRoleHintCookie(user.role, { rememberMe });
 
     await prisma.user.update({
       where: { id: user.id },
@@ -157,7 +179,13 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    await recordEvent({ type: 'LOGIN_SUCCESS', userId: user.id, sessionId: session.id, ctx });
+    await recordEvent({
+      type: 'LOGIN_SUCCESS',
+      userId: user.id,
+      sessionId: session.id,
+      ctx,
+      metadata: { rememberMe },
+    });
     await recordEvent({ type: 'SESSION_CREATED', userId: user.id, sessionId: session.id, ctx });
 
     if (user.role === 'ADMIN') {

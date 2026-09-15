@@ -27,8 +27,10 @@ export async function POST() {
     }
 
     await touchSession(state.session.id, state.user.id);
-    // Keep the middleware role hint in step with the database.
-    await setRoleHintCookie(state.user.role);
+    // Keep the middleware role hint in step with the database — and with this
+    // session's lifetime, so a remembered session does not quietly lose its
+    // role hint after seven days.
+    await setRoleHintCookie(state.user.role, { rememberMe: state.session.rememberMe });
 
     return NextResponse.json({
       ok: true,

@@ -61,7 +61,6 @@ export function RegisterForm() {
       setError('Passwords do not match.');
       return;
     }
-
     setPending(true);
     try {
       const response = await fetch('/api/auth/register', {
@@ -79,8 +78,9 @@ export function RegisterForm() {
         return;
       }
 
-      router.replace((data.redirectTo as string) ?? '/');
-      router.refresh();
+      // No session yet — the account is not usable until the emailed code is
+      // entered, so the next step is the verification screen, not the app.
+      router.replace(`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`);
     } catch {
       setError('We could not reach the server. Check your connection and try again.');
     } finally {
@@ -98,16 +98,23 @@ export function RegisterForm() {
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="email">Email</Label>
+        <Label htmlFor="email">MIT-WPU email</Label>
         <Input
           id="email"
           type="email"
           required
           autoComplete="email"
-          placeholder="you@college.edu"
+          placeholder="you@mitwpu.edu.in"
           value={form.email}
           onChange={update('email')}
+          aria-describedby="email-hint"
         />
+        <p id="email-hint" className="text-xs text-muted-foreground">
+          Accounts are open to MIT-WPU students, so this must end in
+          {' '}
+          <span className="font-medium text-foreground">@mitwpu.edu.in</span>. We will email you a
+          6-digit code to confirm it.
+        </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -204,7 +211,7 @@ export function RegisterForm() {
       </details>
 
       <Button type="submit" className="w-full" size="lg" loading={pending}>
-        {pending ? 'Creating account…' : 'Create account'}
+        {pending ? 'Sending your code…' : 'Create account'}
       </Button>
 
       <p className="text-center text-sm text-muted-foreground">

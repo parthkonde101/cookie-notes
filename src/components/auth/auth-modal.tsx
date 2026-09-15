@@ -64,10 +64,9 @@ export function AuthModalProvider({ children }: { children: React.ReactNode }) {
   const [mode, setMode] = useState<Mode>('signin');
   const [target, setTarget] = useState<{ redirectTo: string } | null>(null);
 
-  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [conflict, setConflict] = useState<ConflictDetails | null>(null);
@@ -84,26 +83,20 @@ export function AuthModalProvider({ children }: { children: React.ReactNode }) {
 
   function reset() {
     setPassword('');
-    setConfirmPassword('');
     setError(null);
     setConflict(null);
   }
 
+  /** Sign-in only — registration is handed off to /register. */
   async function submit(force = false) {
     setError(null);
     setPending(true);
 
     try {
-      const endpoint = mode === 'signin' ? '/api/auth/login' : '/api/auth/register';
-      const payload =
-        mode === 'signin'
-          ? { email, password, force }
-          : { name, email, password, confirmPassword };
-
-      const response = await fetch(endpoint, {
+      const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ email, password, force, rememberMe }),
       });
       const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
 
@@ -224,77 +217,90 @@ export function AuthModalProvider({ children }: { children: React.ReactNode }) {
               >
                 {error && <Alert variant="error">{error}</Alert>}
 
-                {mode === 'register' && (
-                  <div className="space-y-2">
-                    <Label htmlFor="auth-name">Full name</Label>
-                    <Input
-                      id="auth-name"
-                      autoComplete="name"
-                      required
-                      value={name}
-                      onChange={(event) => setName(event.target.value)}
-                    />
-                  </div>
-                )}
 
-                <div className="space-y-2">
-                  <Label htmlFor="auth-email">Email</Label>
-                  <Input
-                    id="auth-email"
-                    type="email"
-                    autoComplete="email"
-                    required
-                    placeholder="you@college.edu"
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="auth-password">Password</Label>
-                  <Input
-                    id="auth-password"
-                    type="password"
-                    autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-                    required
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                  />
-                  {mode === 'register' && (
-                    <p className="text-xs text-muted-foreground">
-                      At least 10 characters with upper and lowercase letters, a number and a
-                      symbol.
+                {/* Signing up needs a PRN, a college email, a verification code
+                    and two explicit agreements. Rebuilding that here would be a
+                    second registration form to keep in step with the first, in
+                    a dialog too small to read the terms in — so the modal hands
+                    the student over to the real page instead. */}
+                {mode === 'register' ? (
+                  <div className="space-y-4">
+                    <p className="text-sm leading-relaxed text-muted-foreground">
+                      Cookie Notes accounts are for MIT-WPU students. Creating one takes a minute:
+                      your PRN, your <span className="font-medium text-foreground">@mitwpu.edu.in</span>{' '}
+                      address, and a 6-digit code we email you to confirm it.
                     </p>
-                  )}
-                </div>
-
-                {mode === 'register' && (
-                  <div className="space-y-2">
-                    <Label htmlFor="auth-confirm">Confirm password</Label>
-                    <Input
-                      id="auth-confirm"
-                      type="password"
-                      autoComplete="new-password"
-                      required
-                      value={confirmPassword}
-                      onChange={(event) => setConfirmPassword(event.target.value)}
-                    />
+                    <Button asChild className="w-full" size="lg">
+                      <Link href={`/register?next=${encodeURIComponent(target?.redirectTo ?? '/')}`}>
+                        Continue to sign up
+                      </Link>
+                    </Button>
+                    <p className="text-center text-xs text-muted-foreground">
+                      Already have an account?{' '}
+                      <button
+                        type="button"
+                        onClick={() => setMode('signin')}
+                        className="font-medium text-foreground underline-offset-4 hover:underline"
+                      >
+                        Sign in
+                      </button>
+                    </p>
                   </div>
-                )}
+                ) : (
+                  <>
+                    <div className="space-y-2">
+                      <Label htmlFor="auth-email">Email</Label>
+                      <Input
+                        id="auth-email"
+                        type="email"
+                        autoComplete="email"
+                        required
+                        placeholder="you@mitwpu.edu.in"
+                        value={email}
+                        onChange={(event) => setEmail(event.target.value)}
+                      />
+                    </div>
 
-                <Button type="submit" className="w-full" size="lg" loading={pending}>
-                  {mode === 'signin' ? 'Sign in' : 'Create account'}
-                </Button>
+                    <div className="space-y-2">
+                      <Label htmlFor="auth-password">Password</Label>
+                      <Input
+                        id="auth-password"
+                        type="password"
+                        autoComplete="current-password"
+                        required
+                        value={password}
+                        onChange={(event) => setPassword(event.target.value)}
+                      />
+                    </div>
 
-                {mode === 'signin' && (
-                  <p className="text-center text-xs text-muted-foreground">
-                    <Link
-                      href="/forgot-password"
-                      className="underline-offset-4 hover:text-foreground hover:underline"
+                    <label
+                      htmlFor="auth-remember"
+                      className="flex cursor-pointer items-center gap-2.5 text-sm text-foreground/90"
                     >
-                      Forgot your password?
-                    </Link>
-                  </p>
+                      <input
+                        id="auth-remember"
+                        type="checkbox"
+                        checked={rememberMe}
+                        disabled={pending}
+                        onChange={(event) => setRememberMe(event.target.checked)}
+                        className="size-4 shrink-0 accent-primary"
+                      />
+                      Keep me signed in
+                    </label>
+
+                    <Button type="submit" className="w-full" size="lg" loading={pending}>
+                      Sign in
+                    </Button>
+
+                    <p className="text-center text-xs text-muted-foreground">
+                      <Link
+                        href="/forgot-password"
+                        className="underline-offset-4 hover:text-foreground hover:underline"
+                      >
+                        Forgot your password?
+                      </Link>
+                    </p>
+                  </>
                 )}
               </form>
             </>

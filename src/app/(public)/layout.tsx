@@ -2,7 +2,8 @@ import Link from 'next/link';
 import { AuthModalProvider } from '@/components/auth/auth-modal';
 import { SiteHeader } from '@/components/layout/site-header';
 import { SessionHeartbeat } from '@/components/session/heartbeat';
-import { optionalUser } from '@/lib/auth/guards';
+import { MailWarning } from 'lucide-react';
+import { EMAIL_MIGRATION_PATH, needsEmailMigration, optionalUser } from '@/lib/auth/guards';
 import { countLiveUsers } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
@@ -17,6 +18,10 @@ export const dynamic = 'force-dynamic';
 export default async function PublicLayout({ children }: { children: React.ReactNode }) {
   const auth = await optionalUser();
   const liveUsers = auth ? await countLiveUsers() : undefined;
+  // Browsing the catalogue stays public and ungated — it always was. But a
+  // student who is signed in and cannot yet open anything deserves to know why
+  // before they click a unit and get redirected.
+  const mustVerify = auth ? needsEmailMigration(auth.user) : false;
 
   return (
     <AuthModalProvider>
@@ -31,6 +36,23 @@ export default async function PublicLayout({ children }: { children: React.React
           }
           liveUsers={liveUsers}
         />
+
+        {mustVerify && (
+          <div className="border-b border-warning/30 bg-warning/10">
+            <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 text-sm sm:px-6">
+              <MailWarning aria-hidden className="size-4 shrink-0 text-warning" />
+              <p className="min-w-0 flex-1 text-foreground/90">
+                Verify your MIT-WPU email to open notes again.
+              </p>
+              <Link
+                href={EMAIL_MIGRATION_PATH}
+                className="shrink-0 font-medium text-foreground underline underline-offset-4"
+              >
+                Verify now
+              </Link>
+            </div>
+          </div>
+        )}
 
         <main className="flex-1">{children}</main>
 

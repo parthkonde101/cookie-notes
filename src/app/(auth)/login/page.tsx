@@ -10,12 +10,12 @@ export const dynamic = 'force-dynamic';
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ reason?: string; next?: string }>;
+  searchParams: Promise<{ reason?: string; next?: string; verified?: string }>;
 }) {
   const auth = await optionalUser();
   if (auth) redirect(auth.user.role === 'ADMIN' ? '/admin' : '/');
 
-  const { reason, next } = await searchParams;
+  const { reason, next, verified } = await searchParams;
 
   return (
     <Card>
@@ -24,7 +24,7 @@ export default async function LoginPage({
         <CardDescription>Sign in to open your notes.</CardDescription>
       </CardHeader>
       <CardContent>
-        <LoginForm reason={reason} next={next} />
+        <LoginForm reason={reason} next={next} verified={verified === '1'} />
       </CardContent>
     </Card>
   );

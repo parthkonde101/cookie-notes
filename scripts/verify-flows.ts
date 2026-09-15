@@ -39,8 +39,12 @@ const BASE_URL = process.env.VERIFY_BASE_URL ?? 'http://localhost:3000';
  */
 const PREVIEW_MODE = (process.env.OPEN_ACCESS_MODE ?? 'true') !== 'false';
 const PREFIX = 'flowtest';
-const STUDENT_EMAIL = `${PREFIX}+student@scholarvault.test`;
-const OTHER_EMAIL = `${PREFIX}+other@scholarvault.test`;
+// Student accounts are created through the real registration flow, which only
+// accepts the college domain. The admin is made directly in the database, as a
+// pre-existing account would be, and deliberately keeps a non-college address —
+// proving that legacy domains still sign in.
+const STUDENT_EMAIL = `${PREFIX}+student@mitwpu.edu.in`;
+const OTHER_EMAIL = `${PREFIX}+other@mitwpu.edu.in`;
 const ADMIN_EMAIL = `${PREFIX}+admin@scholarvault.test`;
 const PASSWORD = 'Verify-Flows-2026!';
 
@@ -133,6 +137,30 @@ async function draftNoteId(): Promise<string | null> {
 
 async function body<T = Record<string, unknown>>(response: Response): Promise<T> {
   return (await response.json().catch(() => ({}))) as T;
+}
+
+/**
+ * Did this page response send the browser somewhere else?
+ *
+ * A server-component `redirect()` produces a real 307 only while the response
+ * has not started streaming — which, for a guard that has to ask the database
+ * first, it usually has. After the shell is flushed Next cannot change the
+ * status code, so it finishes the stream with a `NEXT_REDIRECT` instruction and
+ * a `<meta http-equiv="refresh">` (which works with scripting disabled too).
+ * Both outcomes are the same redirect; only the status line differs.
+ *
+ * Returns the destination when the response redirects, otherwise null.
+ */
+async function pageRedirect(response: Response): Promise<string | null> {
+  if (response.status === 307 || response.status === 302 || response.status === 308) {
+    return response.headers.get('location');
+  }
+  if (response.status !== 200) return null;
+  const html = await response.text();
+  const meta = /id="__next-page-redirect"[^>]*content="\d+;\s*url=([^"]+)"/.exec(html);
+  if (meta) return meta[1];
+  const digest = /NEXT_REDIRECT;[a-z]+;([^;]+);/.exec(html);
+  return digest ? digest[1] : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,15 +302,36 @@ async function main() {
   // --- 1. Registration -----------------------------------------------------
   section('1. Registration');
   {
-    const response = await studentA.json('/api/auth/register', {
+    // Name, email, password. Nothing else is asked for and nothing else is
+    // honoured — see the "old client" check below.
+    const base = {
       name: 'Verify Student',
-      email: STUDENT_EMAIL,
       password: PASSWORD,
       confirmPassword: PASSWORD,
       college: 'Verification College',
+    };
+
+    // The domain rule is enforced by the schema the route parses, so it holds
+    // for a request posted straight at the API with no form involved.
+    const wrongDomain = await studentA.json('/api/auth/register', {
+      ...base,
+      email: `${PREFIX}+outsider@gmail.com`,
     });
-    check('student can register', response.status === 201, `status ${response.status}`);
-    check('registration sets a session cookie', studentA.hasSession());
+    check('a non-MIT-WPU email is refused by the API', wrongDomain.status === 422, `status ${wrongDomain.status}`);
+    const lookalike = await studentA.json('/api/auth/register', {
+      ...base,
+      email: `${PREFIX}+fake@fake-mitwpu.edu.in`,
+    });
+    check('a look-alike domain is refused', lookalike.status === 422, `status ${lookalike.status}`);
+
+    check(
+      'and neither attempt created an account',
+      (await prisma.user.count({ where: { email: STUDENT_EMAIL } })) === 0,
+    );
+
+    const response = await studentA.json('/api/auth/register', { ...base, email: STUDENT_EMAIL });
+    check('a complete registration is accepted', response.status === 202, `status ${response.status}`);
+    check('registration does NOT sign anybody in', !studentA.hasSession());
 
     const created = await prisma.user.findUnique({ where: { email: STUDENT_EMAIL } });
     check('account is persisted with STUDENT role', created?.role === 'STUDENT');
@@ -290,23 +339,105 @@ async function main() {
       'password is stored as a bcrypt hash, never in plain text',
       Boolean(created && created.passwordHash.startsWith('$2') && !created.passwordHash.includes(PASSWORD)),
     );
+    check('it is marked as needing verification', created?.verificationRequired === true);
+    check('and is not yet verified', created?.emailVerifiedAt === null);
+    // The columns are still in the database — dropping them would have thrown
+    // away what little history exists — but nothing writes to them any more,
+    // and a consent record nobody gave is not one worth having.
+    check('no PRN is collected or stored', created?.prn === null);
+    check('no terms agreement is fabricated', created?.termsAcceptedAt === null && created?.termsVersion === null);
+    check(
+      'no analytics consent is fabricated',
+      created?.analyticsConsentAt === null && created?.analyticsConsentVersion === null,
+    );
+    check('no session row was created', (await prisma.session.count({ where: { userId: created!.id } })) === 0);
+
+    // Cannot sign in until the address is proved.
+    const early = await studentA.json('/api/auth/login', { email: STUDENT_EMAIL, password: PASSWORD });
+    check('an unverified account cannot sign in', early.status === 403, `status ${early.status}`);
+    const earlyBody = await body<{ code?: string }>(early);
+    check('and is told why', earlyBody.code === 'email_unverified', earlyBody.code);
+    check('still no session cookie', !studentA.hasSession());
+
+    // The code itself only exists in the email, so the test issues one it knows
+    // — through the same helper the route uses, which supersedes any other.
+    const { issueCode } = await import('../src/lib/auth/otp');
+    const wrongCode = await studentA.json('/api/auth/verify-email', {
+      email: STUDENT_EMAIL,
+      code: '000000',
+    });
+    check('a wrong code is rejected', wrongCode.status === 422);
+
+    const { code } = await issueCode(created!.id, null);
+    const verified = await studentA.json('/api/auth/verify-email', { email: STUDENT_EMAIL, code });
+    check('the right code verifies the address', verified.status === 200, `status ${verified.status}`);
+    check('verification does NOT sign anybody in either', !studentA.hasSession());
+
+    const after = await prisma.user.findUniqueOrThrow({ where: { email: STUDENT_EMAIL } });
+    check('the verification timestamp is recorded', after.emailVerifiedAt !== null);
+
+    const replay = await studentA.json('/api/auth/verify-email', { email: STUDENT_EMAIL, code });
+    check('the code cannot be replayed', replay.status === 200 || replay.status === 422);
+
+    // Now the ordinary sign-in works.
+    const signIn = await studentA.json('/api/auth/login', { email: STUDENT_EMAIL, password: PASSWORD });
+    check('a verified student can sign in', signIn.status === 200, `status ${signIn.status}`);
+    check('and receives a session', studentA.hasSession());
   }
 
   // --- 2. Duplicate registration ------------------------------------------
   section('2. Duplicate account');
   {
-    const response = await outsider.json('/api/auth/register', {
+    // Both of these deliberately carry the fields an older client used to send.
+    // They must be ignored rather than honoured — a stale browser tab cannot
+    // talk the server back into recording a PRN or a consent nobody gave.
+    const taken = await outsider.json('/api/auth/register', {
       name: 'Impostor',
+      prn: 'FLOWTEST9999',
       email: STUDENT_EMAIL,
       password: PASSWORD,
       confirmPassword: PASSWORD,
+      acceptTerms: true,
+      analyticsConsent: true,
     });
-    check('second registration with the same email is rejected', response.status === 409);
-    const data = await body<{ error?: string }>(response);
+    const free = await outsider.json('/api/auth/register', {
+      name: 'Nobody',
+      prn: 'FLOWTEST9998',
+      email: `${PREFIX}+nobody@mitwpu.edu.in`,
+      password: PASSWORD,
+      confirmPassword: PASSWORD,
+      acceptTerms: true,
+      analyticsConsent: true,
+    });
+
+    // The whole point: a registered address and an unregistered one must be
+    // indistinguishable to whoever is asking.
+    check('registering a taken address does not reveal that it is taken', taken.status === 202, `status ${taken.status}`);
+    check('an unused address answers identically', free.status === taken.status);
+    const takenBody = await body<{ message?: string }>(taken);
+    const freeBody = await body<{ message?: string }>(free);
+    check('with the same message', takenBody.message === freeBody.message, takenBody.message);
     check(
-      'the rejection message is user-friendly',
-      Boolean(data.error && !/prisma|constraint|sql/i.test(data.error)),
-      data.error,
+      'the existing account is not disturbed',
+      (await prisma.user.findUniqueOrThrow({ where: { email: STUDENT_EMAIL } })).name === 'Verify Student',
+    );
+    check(
+      'and no second account is created for that address',
+      (await prisma.user.count({ where: { email: STUDENT_EMAIL } })) === 1,
+    );
+
+    const legacyClient = await prisma.user.findUnique({
+      where: { email: `${PREFIX}+nobody@mitwpu.edu.in` },
+      select: { prn: true, termsAcceptedAt: true, analyticsConsentAt: true },
+    });
+    check(
+      'a PRN sent by an old client is ignored, not stored',
+      legacyClient?.prn === null,
+      legacyClient?.prn ?? 'null',
+    );
+    check(
+      'a consent flag sent by an old client is ignored, not recorded',
+      legacyClient?.termsAcceptedAt === null && legacyClient?.analyticsConsentAt === null,
     );
   }
 
@@ -352,6 +483,81 @@ async function main() {
       where: { user: { email: STUDENT_EMAIL }, status: 'ACTIVE' },
     });
     check('exactly one session row remains active', activeSessions === 1, `${activeSessions} active`);
+  }
+
+  // --- 4b. Keep me signed in ----------------------------------------------
+  section('4b. Keep me signed in');
+  {
+    const student = await prisma.user.findUniqueOrThrow({ where: { email: STUDENT_EMAIL } });
+
+    // Default (unticked) must reproduce the existing behaviour exactly.
+    const plain = await prisma.session.findFirstOrThrow({
+      where: { userId: student.id, status: 'ACTIVE' },
+      orderBy: { createdAt: 'desc' },
+    });
+    check('an ordinary sign-in is not remembered', plain.rememberMe === false);
+    const plainDays = (plain.expiresAt.getTime() - plain.createdAt.getTime()) / 86_400_000;
+    check('and keeps the existing 7-day lifetime', Math.round(plainDays) === 7, `${plainDays.toFixed(2)}d`);
+
+    const remembered = new Client('remembered');
+    const signIn = await remembered.json('/api/auth/login', {
+      email: STUDENT_EMAIL,
+      password: PASSWORD,
+      force: true,
+      rememberMe: true,
+    });
+    check('signing in with "Keep me signed in" works', signIn.status === 200, `status ${signIn.status}`);
+    check('and issues a session', remembered.hasSession());
+
+    const row = await prisma.session.findFirstOrThrow({
+      where: { userId: student.id, status: 'ACTIVE' },
+      orderBy: { createdAt: 'desc' },
+    });
+    check('the session is flagged as remembered', row.rememberMe === true);
+    const days = (row.expiresAt.getTime() - row.createdAt.getTime()) / 86_400_000;
+    check('and lasts 30 days', Math.round(days) === 30, `${days.toFixed(2)}d`);
+
+    // The hard requirement, over real HTTP.
+    const liveBefore = await body<{ liveUsers?: number }>(
+      await remembered.request('/api/stats/live'),
+    );
+    check('a remembered student who is here counts as live', (liveBefore.liveUsers ?? 0) >= 1);
+
+    await prisma.session.update({
+      where: { id: row.id },
+      data: { lastActivityAt: new Date(Date.now() - 10 * 60 * 1000) },
+    });
+    const liveAfter = await body<{ liveUsers?: number }>(
+      await remembered.request('/api/stats/live'),
+    );
+    check(
+      'ten idle minutes removes them from the live count',
+      (liveAfter.liveUsers ?? 0) < (liveBefore.liveUsers ?? 1),
+      `${liveBefore.liveUsers} → ${liveAfter.liveUsers}`,
+    );
+
+    const heartbeat = await remembered.request('/api/session/heartbeat', { method: 'POST' });
+    check('but they are still signed in', heartbeat.status === 200, `status ${heartbeat.status}`);
+    const back = await body<{ liveUsers?: number }>(await remembered.request('/api/stats/live'));
+    check(
+      'and using the app makes them live again',
+      (back.liveUsers ?? 0) >= (liveBefore.liveUsers ?? 1),
+      `${back.liveUsers}`,
+    );
+
+    // Logout must kill a 30-day session immediately.
+    await remembered.request('/api/auth/logout', { method: 'POST' });
+    const dead = await remembered.request('/api/session/heartbeat', { method: 'POST' });
+    check('logging out ends a remembered session at once', dead.status === 401);
+    const ended = await prisma.session.findUniqueOrThrow({ where: { id: row.id } });
+    check('and the row is LOGGED_OUT server-side', ended.status === 'LOGGED_OUT');
+
+    // Put studentB back in charge for the sections that follow.
+    await studentB.json('/api/auth/login', {
+      email: STUDENT_EMAIL,
+      password: PASSWORD,
+      force: true,
+    });
   }
 
   // --- 5. Wrong password ---------------------------------------------------
@@ -630,17 +836,24 @@ async function main() {
     );
 
     // A genuinely different student, so ownership can be tested rather than
-    // assumed. Registering signs them in on their own session.
+    // assumed. Created directly, the way an account that predates email
+    // verification looks, then signed in normally.
     const second = new Client('subscriber2');
-    const secondEmail = `${PREFIX}+baker@scholarvault.test`;
-    await second.json('/api/auth/register', {
-      name: 'Second Student',
-      email: secondEmail,
-      password: PASSWORD,
-      confirmPassword: PASSWORD,
+    const secondEmail = `${PREFIX}+baker@mitwpu.edu.in`;
+    const secondUser = await prisma.user.create({
+      data: {
+        email: secondEmail,
+        name: 'Second Student',
+        passwordHash: await bcrypt.hash(PASSWORD, 12),
+        role: 'STUDENT',
+        status: 'ACTIVE',
+        // An ordinary, already-verified student: this fixture is about
+        // subscriptions, not about the college-email migration.
+        emailVerifiedAt: new Date(),
+      },
     });
+    await second.json('/api/auth/login', { email: secondEmail, password: PASSWORD });
     check('a second student has their own session', second.hasSession());
-    const secondUser = await prisma.user.findUniqueOrThrow({ where: { email: secondEmail } });
 
     const theirs = await (await second.request(`/subject/${subject.slug}`)).text();
     check(
@@ -875,6 +1088,9 @@ async function main() {
         name: 'Other Student',
         passwordHash: await bcrypt.hash(PASSWORD, 12),
         role: 'STUDENT',
+        // Verified, so the "a stolen token does not work for someone else"
+        // check below fails for that reason and not because of the gate.
+        emailVerifiedAt: new Date(),
       },
     });
     await prisma.entitlement.create({
@@ -1040,6 +1256,176 @@ async function main() {
     check('the audit entry records who acted', entry?.actorEmail === ADMIN_EMAIL);
     check('the audit entry records the target', Boolean(entry?.targetId));
     check('the audit entry records the origin IP', Boolean(entry?.ipAddress));
+  }
+
+  // --- 15b. The legacy college-email migration, over real HTTP -------------
+  //
+  // The engine-level suite (npm run verify:migration) proves the data rules.
+  // This proves the wire: that a legacy account can still sign in, that the
+  // gate actually stops it reading a note it is entitled to, that the code
+  // travels by email only, and that everything it owns survives.
+  section('15b. Legacy college-email migration');
+  {
+    const legacyEmail = `${PREFIX}+legacy@oldmail.example`;
+    const collegeEmail = `${PREFIX}+legacy@mitwpu.edu.in`;
+
+    const legacyUser = await prisma.user.create({
+      data: {
+        email: legacyEmail,
+        name: 'Legacy Student',
+        passwordHash: await bcrypt.hash(PASSWORD, 12),
+        role: 'STUDENT',
+        status: 'ACTIVE',
+        // Exactly the shape of a real pre-existing account: verified never,
+        // because verification did not exist when it was made.
+        emailVerifiedAt: null,
+      },
+    });
+    await prisma.entitlement.create({
+      data: {
+        userId: legacyUser.id,
+        scope: 'SUBJECT',
+        targetKey: `SUBJECT:${subject.id}`,
+        subjectId: subject.id,
+        source: 'ADMIN_GRANT',
+      },
+    });
+
+    const legacy = new Client('legacy');
+    const signIn = await legacy.json('/api/auth/login', {
+      email: legacyEmail,
+      password: PASSWORD,
+    });
+    check(
+      'a legacy account can still sign in with its old address',
+      signIn.status === 200,
+      `status ${signIn.status}`,
+    );
+    check('and receives a session', legacy.hasSession());
+
+    const sessionBefore = await prisma.session.findFirst({
+      where: { userId: legacyUser.id, status: 'ACTIVE' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    check('the session row exists', Boolean(sessionBefore));
+
+    // The catalogue stays open — it always was.
+    const catalogue = await legacy.request(`/subject/${subject.slug}`);
+    check('the catalogue is still browsable while unverified', catalogue.status === 200);
+    const catalogueHtml = await catalogue.text();
+    check(
+      'and says why reading is blocked',
+      catalogueHtml.includes('Verify your MIT-WPU email'),
+    );
+
+    // The gate, on a note this account is entitled to.
+    const blocked = await legacy.request(`/api/notes/${noteId}/view-token`, { method: 'POST' });
+    check('an entitled but unverified student cannot open a note', blocked.status === 403, `status ${blocked.status}`);
+    const blockedBody = await body<{ code?: string }>(blocked);
+    check(
+      'and is told it is the email, not the grant',
+      blockedBody.code === 'email_migration_required',
+      blockedBody.code,
+    );
+
+    const readerPage = await legacy.request(`/notes/${noteId}`);
+    const readerTarget = await pageRedirect(readerPage);
+    check(
+      'the reader page sends them to the migration screen',
+      (readerTarget ?? '').includes('/verify-college-email'),
+      readerTarget ?? `status ${readerPage.status}, no redirect`,
+    );
+
+    const prompt = await legacy.request('/verify-college-email');
+    check('the migration screen itself is reachable', prompt.status === 200, `status ${prompt.status}`);
+    const promptHtml = await prompt.text();
+    check('it asks for the college email', promptHtml.includes('Update your college email'));
+    check('and offers no way to skip', !/>\s*Skip\s*</.test(promptHtml));
+
+    // Addresses that must be refused, over the wire.
+    for (const bad of [
+      `${PREFIX}@gmail.com`,
+      `${PREFIX}@mitwpu.edu`,
+      `${PREFIX}@fake-mitwpu.edu.in`,
+      `${PREFIX}@sub.mitwpu.edu.in`,
+    ]) {
+      const rejected = await legacy.json('/api/auth/college-email', { email: bad });
+      check(`the API refuses ${bad}`, rejected.status === 422, `status ${rejected.status}`);
+    }
+    check(
+      'no proposal was recorded for any of them',
+      (await prisma.user.findUniqueOrThrow({ where: { id: legacyUser.id } })).pendingEmail === null,
+    );
+
+    // The real proposal.
+    const proposed = await legacy.json('/api/auth/college-email', { email: collegeEmail });
+    check('a college address is accepted for verification', proposed.status === 200, `status ${proposed.status}`);
+
+    const midFlow = await prisma.user.findUniqueOrThrow({ where: { id: legacyUser.id } });
+    check('the account still signs in with the old address', midFlow.email === legacyEmail, midFlow.email);
+    check('the new one is only proposed', midFlow.pendingEmail === collegeEmail);
+    check('and nothing is verified yet', midFlow.emailVerifiedAt === null);
+    check(
+      'the gate is still closed mid-flow',
+      (await legacy.request(`/api/notes/${noteId}/view-token`, { method: 'POST' })).status === 403,
+    );
+
+    const wrong = await legacy.json('/api/auth/college-email', { code: '000000' }, 'PUT');
+    check('a wrong code is refused', wrong.status === 422, `status ${wrong.status}`);
+    const afterWrong = await prisma.user.findUniqueOrThrow({ where: { id: legacyUser.id } });
+    check('a wrong code changes nothing', afterWrong.email === legacyEmail && afterWrong.emailVerifiedAt === null);
+
+    // The code only ever exists in the email, so the test mints one through the
+    // same helper the route uses — which supersedes whatever was sent.
+    const { issueCode } = await import('../src/lib/auth/otp');
+    const { code } = await issueCode(legacyUser.id, null, 'email_change');
+
+    const crossPurpose = await legacy.json('/api/auth/verify-email', {
+      email: collegeEmail,
+      code,
+    });
+    check(
+      'a migration code cannot be spent on the sign-up endpoint',
+      crossPurpose.status !== 200,
+      `status ${crossPurpose.status}`,
+    );
+
+    const confirmed = await legacy.json('/api/auth/college-email', { code }, 'PUT');
+    check('the right code completes the migration', confirmed.status === 200, `status ${confirmed.status}`);
+
+    const after = await prisma.user.findUniqueOrThrow({
+      where: { id: legacyUser.id },
+      include: { entitlements: true },
+    });
+    check('the account now signs in with the college address', after.email === collegeEmail, after.email);
+    check('it is marked verified', after.emailVerifiedAt !== null);
+    check('the proposal is cleared', after.pendingEmail === null);
+    check('the user id never changed', after.id === legacyUser.id);
+    check('the password hash never changed', after.passwordHash === legacyUser.passwordHash);
+    check('the created date never changed', after.createdAt.getTime() === legacyUser.createdAt.getTime());
+    check('the entitlement survived', after.entitlements.length === 1);
+    check('no PRN appeared', after.prn === null);
+    check(
+      'no consent was fabricated along the way',
+      after.termsAcceptedAt === null && after.analyticsConsentAt === null,
+    );
+
+    // The session that did the work is the session that continues.
+    const sessionAfter = await prisma.session.findFirst({
+      where: { userId: legacyUser.id, status: 'ACTIVE' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    check('the session was not invalidated', sessionAfter?.id === sessionBefore?.id);
+
+    const opened = await legacy.request(`/api/notes/${noteId}/view-token`, { method: 'POST' });
+    check('and the note opens on the same session', opened.status === 200, `status ${opened.status}`);
+
+    const goneAway = await pageRedirect(await legacy.request('/verify-college-email'));
+    check('the prompt never comes back', goneAway !== null, goneAway ?? 'still rendered');
+
+    await legacy.request('/api/auth/logout', { method: 'POST' });
   }
 
   // --- 16. Logout ----------------------------------------------------------

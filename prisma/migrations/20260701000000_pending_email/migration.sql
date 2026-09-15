@@ -1,0 +1,29 @@
+-- V7: a holding place for a college address that has been proposed but not proved.
+--
+-- ADDITIVE AND NON-DESTRUCTIVE. One nullable column, nothing else.
+--
+--   * no existing user is modified, re-created or re-hashed
+--   * no password, role, status, entitlement, note, order, analytics event or
+--     audit row is touched
+--   * no session is invalidated — this migration does not go near `sessions`
+--   * nothing is backfilled: every existing row gets NULL, which is exactly
+--     "this student has not proposed a new address"
+--
+-- Why a separate column rather than overwriting `email` and rolling back on
+-- failure: a student's email is their login. Changing it before the code is
+-- proved would lock them out of their own account the moment they mistyped the
+-- address or abandoned the flow. `pendingEmail` lets the account keep working
+-- untouched until a correct code arrives.
+--
+-- Deliberately NOT unique. Two students may type the same address; only one can
+-- ever prove it, and ownership is decided by the existing unique index on
+-- `users.email` at the moment of promotion — not by letting whoever typed it
+-- first reserve someone else's address.
+--
+-- Also note what this migration does NOT do. The `prn`, `termsAcceptedAt`,
+-- `termsVersion`, `analyticsConsentAt` and `analyticsConsentVersion` columns
+-- added in V6 are now unused by the application, and are deliberately left in
+-- place: dropping them would destroy any values already collected and would
+-- make reinstating those features another destructive change. They stay NULL.
+
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pendingEmail" TEXT;

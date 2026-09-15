@@ -26,6 +26,15 @@ export interface SessionUser {
   semester: number | null;
   createdAt: Date;
   lastLoginAt: Date | null;
+  /**
+   * When this student proved control of a college email, or null.
+   *
+   * Carried on the session user so the guards can decide whether to send them
+   * to the migration flow without a second query on every protected request.
+   */
+  emailVerifiedAt: Date | null;
+  /** A college address proposed but not yet proved, so the form can prefill. */
+  pendingEmail: string | null;
 }
 
 export interface ActiveSession {
@@ -34,6 +43,8 @@ export interface ActiveSession {
   createdAt: Date;
   lastActivityAt: Date;
   expiresAt: Date;
+  /** "Keep me signed in" was ticked. Affects lifetime only, never activity. */
+  rememberMe: boolean;
   ipAddress: string | null;
   browser: string | null;
   os: string | null;
@@ -71,12 +82,51 @@ export function safeEqual(a: string, b: string): boolean {
 // Liveness
 // ---------------------------------------------------------------------------
 
+/**
+ * Three clocks, deliberately independent.
+ *
+ *   absolute  how long a session may live at all      7 days  / 30 days remembered
+ *   idle      how long it may sit unused              30 min  / 30 days remembered
+ *   live      how recently it must have been used
+ *             to count as an Active User              5 minutes, always
+ *
+ * "Keep me signed in" moves the first two and never the third. That separation
+ * is the whole reason a remembered student does not inflate the Active Users
+ * number: staying authenticated for a month is an authentication fact, being
+ * "studying right now" is an activity fact, and only the activity clock feeds
+ * the analytics.
+ */
+
+/** The idle window for an ordinary session. */
 export function idleCutoff(now = new Date()): Date {
   return new Date(now.getTime() - env.session.idleMinutes * 60 * 1000);
 }
 
+/** The idle window for a remembered one. */
+export function rememberedIdleCutoff(now = new Date()): Date {
+  return new Date(now.getTime() - env.session.rememberDays * 24 * 60 * 60 * 1000);
+}
+
+/** The idle cutoff that applies to a particular session. */
+export function idleCutoffFor(session: { rememberMe: boolean }, now = new Date()): Date {
+  return session.rememberMe ? rememberedIdleCutoff(now) : idleCutoff(now);
+}
+
+/**
+ * The Active Users window. Five minutes, for everyone, remembered or not.
+ *
+ * Do not make this depend on the session: widening it for remembered sessions
+ * would silently redefine every "active now" number in the product.
+ */
 export function liveCutoff(now = new Date()): Date {
   return new Date(now.getTime() - env.liveWindowMinutes * 60 * 1000);
+}
+
+/** Seconds a session of this kind may live — also used as the cookie's maxAge. */
+export function sessionLifetimeSeconds(rememberMe: boolean): number {
+  return rememberMe
+    ? env.session.rememberDays * 24 * 60 * 60
+    : env.session.absoluteHours * 60 * 60;
 }
 
 /**
@@ -93,7 +143,14 @@ export async function findLiveSession(userId: string, excludeSessionId?: string)
       userId,
       status: 'ACTIVE',
       expiresAt: { gt: now },
-      lastActivityAt: { gt: idleCutoff(now) },
+      // Each session is judged against its own idle window: a remembered one
+      // holds the account for as long as it is valid, an ordinary one still
+      // falls stale after thirty minutes so a forgotten tab never locks a
+      // student out.
+      OR: [
+        { rememberMe: false, lastActivityAt: { gt: idleCutoff(now) } },
+        { rememberMe: true, lastActivityAt: { gt: rememberedIdleCutoff(now) } },
+      ],
       ...(excludeSessionId ? { id: { not: excludeSessionId } } : {}),
     },
     orderBy: { lastActivityAt: 'desc' },
@@ -107,7 +164,11 @@ export async function expireStaleSessions(userId?: string): Promise<number> {
     where: {
       status: 'ACTIVE',
       ...(userId ? { userId } : {}),
-      OR: [{ expiresAt: { lte: now } }, { lastActivityAt: { lte: idleCutoff(now) } }],
+      OR: [
+        { expiresAt: { lte: now } },
+        { rememberMe: false, lastActivityAt: { lte: idleCutoff(now) } },
+        { rememberMe: true, lastActivityAt: { lte: rememberedIdleCutoff(now) } },
+      ],
     },
     data: { status: 'EXPIRED', endedAt: now, endedReason: 'inactivity' },
   });
@@ -121,22 +182,25 @@ export async function expireStaleSessions(userId?: string): Promise<number> {
 export async function createSession(
   userId: string,
   ctx: RequestContext,
+  options: { rememberMe?: boolean } = {},
 ): Promise<{ session: Session; token: string }> {
   const token = generateSessionToken();
   const now = new Date();
+  const rememberMe = options.rememberMe === true;
 
   const session = await prisma.session.create({
     data: {
       userId,
       tokenHash: hashToken(token),
       status: 'ACTIVE',
+      rememberMe,
       ipAddress: ctx.ip,
       userAgent: ctx.userAgent?.slice(0, 512) ?? null,
       device: ctx.device,
       browser: ctx.browser,
       os: ctx.os,
       lastActivityAt: now,
-      expiresAt: new Date(now.getTime() + env.session.absoluteHours * 60 * 60 * 1000),
+      expiresAt: new Date(now.getTime() + sessionLifetimeSeconds(rememberMe) * 1000),
     },
   });
 
@@ -176,14 +240,25 @@ export async function endOtherSessions(
 // Cookie handling
 // ---------------------------------------------------------------------------
 
-export async function setSessionCookie(token: string): Promise<void> {
+/**
+ * Writes the session cookie, matching its lifetime to the row's.
+ *
+ * HttpOnly throughout — the token is never readable by script and is never put
+ * in localStorage or sessionStorage. "Keep me signed in" changes only how long
+ * the browser keeps it; a cookie that outlived its database row would just be a
+ * slower way of being signed out.
+ */
+export async function setSessionCookie(
+  token: string,
+  options: { rememberMe?: boolean } = {},
+): Promise<void> {
   const store = await cookies();
   store.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',
     secure: env.isProduction,
     path: '/',
-    maxAge: env.session.absoluteHours * 60 * 60,
+    maxAge: sessionLifetimeSeconds(options.rememberMe === true),
   });
 }
 
@@ -195,14 +270,19 @@ export async function setSessionCookie(token: string): Promise<void> {
  * page, action and API route re-reads the role from the database. It is
  * refreshed on every heartbeat so a role change takes effect within a minute.
  */
-export async function setRoleHintCookie(role: Role): Promise<void> {
+export async function setRoleHintCookie(
+  role: Role,
+  options: { rememberMe?: boolean } = {},
+): Promise<void> {
   const store = await cookies();
   store.set(ROLE_HINT_COOKIE, role, {
     httpOnly: true,
     sameSite: 'lax',
     secure: env.isProduction,
     path: '/',
-    maxAge: env.session.absoluteHours * 60 * 60,
+    // Kept in step with the session cookie: a role hint that outlives the
+    // session would have middleware routing on a stale role.
+    maxAge: sessionLifetimeSeconds(options.rememberMe === true),
   });
 }
 
@@ -237,6 +317,8 @@ function toSessionUser(user: User): SessionUser {
     semester: user.semester,
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt,
+    emailVerifiedAt: user.emailVerifiedAt,
+    pendingEmail: user.pendingEmail,
   };
 }
 
@@ -247,6 +329,7 @@ function toActiveSession(session: Session): ActiveSession {
     createdAt: session.createdAt,
     lastActivityAt: session.lastActivityAt,
     expiresAt: session.expiresAt,
+    rememberMe: session.rememberMe,
     ipAddress: session.ipAddress,
     browser: session.browser,
     os: session.os,
@@ -288,7 +371,7 @@ export async function getSessionState(options: { touch?: boolean } = {}): Promis
     return { status: 'anonymous' };
   }
 
-  if (record.expiresAt <= now || record.lastActivityAt <= idleCutoff(now)) {
+  if (record.expiresAt <= now || record.lastActivityAt <= idleCutoffFor(record, now)) {
     await endSession(record.id, 'EXPIRED', 'inactivity');
     await recordEvent({
       type: 'SESSION_EXPIRED',

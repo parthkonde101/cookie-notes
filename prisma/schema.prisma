@@ -132,6 +132,10 @@ enum EventType {
   UNIT_SUBSCRIBED
   UNIT_UNSUBSCRIBED
   NOTE_NOTIFICATION_SENT
+  // email verification
+  EMAIL_VERIFICATION_SENT
+  EMAIL_VERIFIED
+  EMAIL_VERIFICATION_FAILED
 }
 
 /// Delivery state of one note-ready email to one recipient.
@@ -197,6 +201,63 @@ model User {
   program  String?
   semester Int?
 
+  /// Self-declared MIT-WPU registration number.
+  ///
+  /// CURRENTLY UNUSED. Registration no longer asks for a PRN and nothing reads
+  /// this field. The column and its index are kept rather than dropped so that
+  /// any value already collected survives and the feature can be reinstated
+  /// without another destructive change; it simply stays NULL for everyone.
+  ///
+  /// If it is ever reinstated: SELF-DECLARED. The OTP proves the student
+  /// controls an @mitwpu.edu.in mailbox; nothing here proves the PRN belongs to
+  /// them. Never present it as verified, and never derive it from the email.
+  prn String? @unique
+
+  /// When the student proved control of their email by entering the code.
+  emailVerifiedAt DateTime?
+
+  /// A college address a student has proposed but not yet proved.
+  ///
+  /// The whole point of a separate column: during the migration the account
+  /// keeps working under its original `email` — which may be any domain — while
+  /// this holds the @mitwpu.edu.in address a code was sent to. Only a correct
+  /// code promotes it into `email`. An abandoned or failed attempt leaves the
+  /// account exactly as it was, and the student can try a different address.
+  ///
+  /// Deliberately NOT unique: two students may both type the same address by
+  /// mistake, and only one of them will ever prove it. Ownership is settled by
+  /// the unique index on `email` at the moment of promotion, not by reserving
+  /// an address someone merely typed.
+  pendingEmail String?
+
+  /// Whether this account was created under the verify-your-email policy.
+  ///
+  /// This is the grandfather switch, and it is deliberately separate from
+  /// `emailVerifiedAt`: the timestamp records a *fact* (the mailbox was
+  /// proved), this records the *policy* that applied when the account was
+  /// made. Defaulting to false means every pre-existing row is exempt without
+  /// a single UPDATE — Postgres fills the default in place — while new student
+  /// registrations set it true and must verify before they can sign in.
+  verificationRequired Boolean @default(false)
+
+  /// Consent, recorded as "when" and "to what version" rather than a bare
+  /// boolean, so a later revision of the terms can be told apart from the one
+  /// a student actually agreed to.
+  ///
+  /// CURRENTLY DORMANT AND NULL FOR EVERYONE. The terms and the data-use notice
+  /// have not been professionally reviewed, so registration does not ask anyone
+  /// to accept them and nothing writes to these columns. They are kept — rather
+  /// than dropped — so the reviewed flow can be switched on later without
+  /// another schema change.
+  ///
+  /// NULL means "never accepted", and it must stay that way until a real
+  /// checkbox with reviewed wording exists. Backfilling these would be
+  /// fabricating a consent record for someone who was never shown anything.
+  termsAcceptedAt        DateTime?
+  termsVersion           String?
+  analyticsConsentAt     DateTime?
+  analyticsConsentVersion String?
+
   failedLoginCount Int       @default(0)
   lockedUntil      DateTime?
   lastLoginAt      DateTime?
@@ -221,6 +282,7 @@ model User {
   orders              Order[]
   unitSubscriptions   UnitNotificationSubscription[]
   noteNotifications   NoteNotification[]
+  verificationTokens  EmailVerificationToken[]
 
   @@index([role, status])
   @@index([createdAt])
@@ -240,6 +302,15 @@ model Session {
   browser   String?
   os        String?
 
+  /// "Keep me signed in" was ticked when this session was created.
+  ///
+  /// Affects only how long the session may live and how long it may sit idle —
+  /// never how activity is measured. `lastActivityAt` is still written by the
+  /// same heartbeat, and the live-user window is still five minutes, so a
+  /// remembered student who has not opened the app is exactly as absent from
+  /// the Active Users count as anyone else.
+  rememberMe Boolean @default(false)
+
   createdAt      DateTime  @default(now())
   lastActivityAt DateTime  @default(now())
   expiresAt      DateTime
@@ -254,6 +325,36 @@ model Session {
   @@index([status, lastActivityAt])
   @@index([createdAt])
   @@map("sessions")
+}
+
+/// A one-time code proving control of an email address.
+///
+/// Deliberately the same shape as PasswordResetToken — hash at rest, an expiry,
+/// a single-use marker — because that pattern is already proven here and a
+/// second, subtly different token system is how one of them ends up weaker.
+/// Two differences earn their place: `attempts`, because a 6-digit code is
+/// guessable without a cap, and `purpose`, so one table can serve a later
+/// second use without another migration.
+///
+/// The code itself is never stored, never logged and never returned by an API.
+model EmailVerificationToken {
+  id         String    @id @default(cuid())
+  userId     String
+  /// SHA-256 of the code. The plaintext exists only inside the request that
+  /// generated it, long enough to be emailed.
+  codeHash   String
+  purpose    String    @default("email_verification")
+  expiresAt  DateTime
+  attempts   Int       @default(0)
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+  ipAddress  String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, consumedAt])
+  @@index([expiresAt])
+  @@map("email_verification_tokens")
 }
 
 model PasswordResetToken {

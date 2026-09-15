@@ -24,7 +24,22 @@ export interface BatchResult {
   failed: { to: string; error: string }[];
 }
 
-export async function sendMail(message: MailMessage): Promise<void> {
+/**
+ * What actually happened to a message.
+ *
+ * `delivered: false` means the mail driver is not configured and the message
+ * went to the server log instead of the recipient. That used to be
+ * indistinguishable from success — `sendMail` returned void either way — which
+ * is exactly how a configuration mistake could look like a working system.
+ * Callers that care (registration will not proceed without a code in the
+ * student's inbox) can now tell the difference.
+ */
+export interface MailResult {
+  delivered: boolean;
+  driver: 'resend' | 'console';
+}
+
+export async function sendMail(message: MailMessage): Promise<MailResult> {
   if (env.mail.driver === 'resend' && env.mail.resendApiKey) {
     const response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -45,7 +60,7 @@ export async function sendMail(message: MailMessage): Promise<void> {
       const body = await response.text();
       throw new Error(`Email delivery failed (${response.status}): ${body.slice(0, 200)}`);
     }
-    return;
+    return { delivered: true, driver: 'resend' };
   }
 
   console.info(
@@ -60,6 +75,7 @@ export async function sendMail(message: MailMessage): Promise<void> {
       '',
     ].join('\n'),
   );
+  return { delivered: false, driver: 'console' };
 }
 
 /**
@@ -147,6 +163,84 @@ export function passwordResetEmail(name: string, url: string): MailMessage['text
     '',
     'If you did not ask for this, you can ignore this email — your password stays unchanged.',
   ].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Sign-up verification code
+// ---------------------------------------------------------------------------
+
+/**
+ * The one-time code that proves a student controls their MIT-WPU mailbox.
+ *
+ * Carries the code and nothing else: no password, no session token, no user id,
+ * no link that would sign anyone in. Someone who intercepts this email learns a
+ * six-digit number that expires in minutes and is useless without the password
+ * that was set alongside it.
+ *
+ * The code is passed in and never persisted in plaintext — the caller hashes it
+ * before it touches the database, and neither this function nor anything it
+ * calls writes it to a log.
+ */
+export function verificationCodeEmail(name: string, code: string, minutes: number): MailMessage {
+  const subject = 'Your Cookie Notes verification code';
+
+  const text = [
+    `Hi ${name},`,
+    '',
+    'Here is your Cookie Notes verification code:',
+    '',
+    `    ${code}`,
+    '',
+    `It expires in ${minutes} minutes and can only be used once.`,
+    '',
+    'If you did not try to create a Cookie Notes account, you can ignore this email.',
+    '',
+    '—',
+    'Cookie Notes · Baked for exams.',
+  ].join('\n');
+
+  const html = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(subject)}</title></head>
+<body style="margin:0;padding:0;background:#faf7f2;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#faf7f2;padding:32px 16px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border:1px solid #e5ded4;border-radius:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+
+        <tr><td style="padding:24px 28px 0 28px;">
+          <span style="font-size:16px;font-weight:600;color:#8a5524;letter-spacing:-0.01em;">🍪 Cookie Notes</span>
+        </td></tr>
+
+        <tr><td style="padding:18px 28px 0 28px;">
+          <p style="margin:0;font-size:15px;line-height:1.6;color:#3c342d;">
+            Hi ${escapeHtml(name)}, use this code to finish creating your account.
+          </p>
+        </td></tr>
+
+        <tr><td style="padding:20px 28px 0 28px;">
+          <div style="border:1px solid #e5ded4;border-radius:10px;background:#faf7f2;padding:18px;text-align:center;">
+            <span style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:30px;font-weight:700;letter-spacing:0.3em;color:#1c1714;">${escapeHtml(code)}</span>
+          </div>
+          <p style="margin:12px 0 0 0;font-size:13px;color:#6b6157;text-align:center;">
+            Expires in ${minutes} minutes · can be used once
+          </p>
+        </td></tr>
+
+        <tr><td style="padding:22px 28px 28px 28px;">
+          <hr style="border:none;border-top:1px solid #e5ded4;margin:0 0 14px 0;">
+          <p style="margin:0;font-size:12px;line-height:1.6;color:#8b8179;">
+            If you did not try to create a Cookie Notes account, you can ignore this email.<br>
+            Cookie Notes · Baked for exams.
+          </p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  return { to: '', subject, text, html };
 }
 
 // ---------------------------------------------------------------------------

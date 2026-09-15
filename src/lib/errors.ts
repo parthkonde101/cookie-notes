@@ -23,8 +23,8 @@ export class AppError extends Error {
 export const Errors = {
   unauthorized: (message = 'You need to sign in to continue.') =>
     new AppError(message, { status: 401, code: 'unauthorized' }),
-  forbidden: (message = 'You do not have access to this.') =>
-    new AppError(message, { status: 403, code: 'forbidden' }),
+  forbidden: (message = 'You do not have access to this.', code = 'forbidden') =>
+    new AppError(message, { status: 403, code }),
   notFound: (message = 'We could not find what you were looking for.') =>
     new AppError(message, { status: 404, code: 'not_found' }),
   conflict: (message: string, details?: unknown) =>
@@ -39,6 +39,9 @@ export const Errors = {
       code: 'session_conflict',
       details,
     }),
+  /** A server-side problem the caller can retry, phrased for a person. */
+  internal: (message = 'Something went wrong on our end. Please try again.') =>
+    new AppError(message, { status: 500, code: 'internal_error' }),
 };
 
 function reference(): string {

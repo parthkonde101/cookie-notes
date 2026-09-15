@@ -214,6 +214,9 @@ Everything lives in `.env` (git-ignored). `.env.example` is the reference copy.
 | Variable                 | Default | Meaning                                         |
 | ------------------------ | ------- | ----------------------------------------------- |
 | `SESSION_ABSOLUTE_HOURS` | `168`   | Hard session lifetime.                          |
+| `SESSION_REMEMBER_DAYS`  | `30`    | Lifetime of a "Keep me signed in" session (also its idle window). Does not affect Active Users. |
+| `TERMS_VERSION`          | date    | Revision of the terms new students accept.      |
+| `ANALYTICS_CONSENT_VERSION` | date | Revision of the analytics notice they accept.   |
 | `SESSION_IDLE_MINUTES`   | `30`    | Inactivity before a session is considered dead. |
 | `LIVE_WINDOW_MINUTES`    | `5`     | Recency that counts as "studying right now".    |
 | `MAX_UPLOAD_MB`          | `50`    | Per-file upload limit.                          |
