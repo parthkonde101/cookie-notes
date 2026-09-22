@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { ArrowRight, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuthModal } from '@/components/auth/auth-modal';
+import { useVerificationGate } from '@/components/auth/verification-gate';
 import { cn } from '@/lib/utils';
 
 export type CardAccessState =
@@ -34,12 +35,17 @@ export interface NoteCardProps {
 export function NoteCard({ id, title, description, context, pageCount, access }: NoteCardProps) {
   const router = useRouter();
   const { requestAuth } = useAuthModal();
+  const { allowNoteOpen } = useVerificationGate();
 
   const href = `/notes/${id}`;
   const unavailable = access.kind === 'unavailable';
 
   function activate() {
     if (access.kind === 'open') {
+      // An unverified student gets the dialog instead of the reader. The reader
+      // would refuse them anyway; this is so they find out here, with a way
+      // forward, rather than by being redirected.
+      if (!allowNoteOpen(href)) return;
       router.push(href);
       return;
     }

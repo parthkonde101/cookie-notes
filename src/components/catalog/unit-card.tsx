@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import { useAuthModal } from '@/components/auth/auth-modal';
+import { useVerificationGate } from '@/components/auth/verification-gate';
 import { type CardAccessState } from '@/components/catalog/note-card';
 import { BakingCookie, NotifyMeButton } from '@/components/catalog/baking';
 import { cn } from '@/lib/utils';
@@ -55,6 +56,7 @@ export function UnitCard({
   subscribed = false,
 }: UnitCardProps) {
   const { requestAuth } = useAuthModal();
+  const { allowNoteOpen } = useVerificationGate();
 
   const access: CardAccessState | null = note?.access ?? null;
   const openable = access?.kind === 'open' || access?.kind === 'sign_in_required';
@@ -65,12 +67,19 @@ export function UnitCard({
   const href = note ? `/notes/${note.id}` : '#';
 
   function onClick(event: React.MouseEvent) {
-    if (!note || note.access.kind !== 'sign_in_required') return;
+    if (!note) return;
     // Let a modified click (new tab, new window) through — the reader itself
-    // will ask them to sign in.
+    // applies the same rules, so nothing is lost by not intercepting it.
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-    event.preventDefault();
-    requestAuth(href);
+
+    if (note.access.kind === 'sign_in_required') {
+      event.preventDefault();
+      requestAuth(href);
+      return;
+    }
+    // Signed in but unverified: the dialog, not the reader. The reader would
+    // refuse them anyway; this is so they find out here, with a way forward.
+    if (!allowNoteOpen(href)) event.preventDefault();
   }
 
   return (

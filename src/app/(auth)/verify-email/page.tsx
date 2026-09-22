@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { VerifyEmailForm } from '@/components/auth/verify-email-form';
 import { optionalUser } from '@/lib/auth/guards';
 
@@ -30,9 +30,10 @@ export default async function VerifyEmailPage({
 
   return (
     <Card>
-      <CardHeader className="space-y-1.5 pb-4">
-        <CardTitle className="text-xl">Check your email</CardTitle>
-        <CardDescription>One code and your account is ready.</CardDescription>
+      {/* The form's own first line carries the address, the instruction and the
+          expiry, so the header does not repeat any of it. */}
+      <CardHeader className="pb-4">
+        <CardTitle className="text-xl">Verify your email</CardTitle>
       </CardHeader>
       <CardContent>
         <VerifyEmailForm email={email.trim().toLowerCase()} />

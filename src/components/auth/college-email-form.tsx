@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { CheckCircle2, MailCheck } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,13 +21,17 @@ const RESEND_COOLDOWN_SECONDS = 60;
  * The step is derived from what the server already knows (`initialPending`), so
  * closing the tab mid-flow and returning lands on the code entry rather than
  * starting over.
+ *
+ * `nextHref` is where to land once verified — the note they were trying to open,
+ * when they arrived from the access dialog. It is validated server-side before
+ * it reaches this component.
  */
 export function CollegeEmailForm({
-  currentEmail,
   initialPending,
+  nextHref = '/',
 }: {
-  currentEmail: string;
   initialPending: string | null;
+  nextHref?: string;
 }) {
   const router = useRouter();
   const codeRef = useRef<HTMLInputElement>(null);
@@ -101,7 +105,7 @@ export function CollegeEmailForm({
       // The gate lifts server-side the moment the timestamp is written; the
       // refresh is what lets the rest of the app notice.
       setTimeout(() => {
-        router.replace('/');
+        router.replace(nextHref);
         router.refresh();
       }, 1200);
     } catch {
@@ -129,18 +133,11 @@ export function CollegeEmailForm({
         <header className="space-y-1.5">
           <h1 className="text-xl font-semibold tracking-tight">Update your college email</h1>
           <p className="text-sm text-muted-foreground">
-            To continue using Cookie Notes, please verify your MIT-WPU email address.
+            Verify your MIT-WPU email address to continue.
           </p>
         </header>
 
         {error && <Alert variant="error">{error}</Alert>}
-
-        <p className="text-sm leading-relaxed text-muted-foreground">
-          Your account currently signs in with{' '}
-          <span className="break-all font-medium text-foreground">{currentEmail}</span>. It stays
-          that way until the new address is confirmed — nothing about your account, notes or access
-          changes.
-        </p>
 
         <div className="space-y-2">
           <Label htmlFor="collegeEmail">MIT-WPU Email</Label>
@@ -172,22 +169,17 @@ export function CollegeEmailForm({
     <form className="space-y-5" onSubmit={confirm}>
       <header className="space-y-1.5">
         <h1 className="text-xl font-semibold tracking-tight">Verify your MIT-WPU email</h1>
+        {/* Address, instruction and expiry in one line — everything needed to
+            finish, and nothing else. */}
         <p className="text-sm text-muted-foreground">
-          Enter the 6-digit code we just sent you.
+          Enter the 6-digit code sent to{' '}
+          <span className="break-all font-medium text-foreground">{email}</span>. It expires in 10
+          minutes.
         </p>
       </header>
 
       {error && <Alert variant="error">{error}</Alert>}
       {notice && <Alert variant="info">{notice}</Alert>}
-
-      <div className="flex items-start gap-3 rounded-md border border-border bg-muted/40 p-3.5">
-        <MailCheck className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
-        <p className="min-w-0 text-sm text-muted-foreground">
-          We sent a 6-digit code to{' '}
-          <span className="break-all font-medium text-foreground">{email}</span>. It expires in 10
-          minutes.
-        </p>
-      </div>
 
       <div className="space-y-2">
         <Label htmlFor="collegeCode">Verification code</Label>

@@ -1329,6 +1329,42 @@ async function main() {
       blockedBody.code,
     );
 
+    // Every door into the content, not just the one the card uses. A dialog on
+    // a card is a courtesy; these are the things that actually stop a reader.
+    const directContent = await legacy.request(`/api/notes/${noteId}/content`);
+    check(
+      'the content endpoint refuses them directly',
+      directContent.status === 403,
+      `status ${directContent.status}`,
+    );
+    check(
+      'and for the same stated reason',
+      (await body<{ code?: string }>(directContent)).code === 'email_migration_required',
+    );
+
+    const pyqRow = await prisma.pyq.findFirst({
+      where: { subjectId: subject.id },
+      select: { id: true },
+    });
+    if (pyqRow) {
+      const pyqToken = await legacy.request(`/api/pyqs/${pyqRow.id}/view-token`, {
+        method: 'POST',
+      });
+      check(
+        'previous-year papers are behind the same gate',
+        pyqToken.status === 403,
+        `status ${pyqToken.status}`,
+      );
+      const pyqPage = await pageRedirect(await legacy.request(`/pyqs/${pyqRow.id}`));
+      check(
+        'and so is the paper reader page',
+        (pyqPage ?? '').includes('/verify-college-email'),
+        pyqPage ?? 'no redirect',
+      );
+    } else {
+      check('no PYQ fixture in this run (skipped)', true);
+    }
+
     const readerPage = await legacy.request(`/notes/${noteId}`);
     const readerTarget = await pageRedirect(readerPage);
     check(
@@ -1337,11 +1373,55 @@ async function main() {
       readerTarget ?? `status ${readerPage.status}, no redirect`,
     );
 
-    const prompt = await legacy.request('/verify-college-email');
+    // Refreshing is the same request twice — it must not become a way through.
+    const refreshed = await pageRedirect(await legacy.request(`/notes/${noteId}`));
+    check(
+      'refreshing the note URL changes nothing',
+      (refreshed ?? '').includes('/verify-college-email'),
+      refreshed ?? 'no redirect',
+    );
+
+    const prompt = await legacy.request(
+      `/verify-college-email?next=${encodeURIComponent(`/notes/${noteId}`)}`,
+    );
     check('the migration screen itself is reachable', prompt.status === 200, `status ${prompt.status}`);
     const promptHtml = await prompt.text();
     check('it asks for the college email', promptHtml.includes('Update your college email'));
     check('and offers no way to skip', !/>\s*Skip\s*</.test(promptHtml));
+    check(
+      'the note they wanted is carried through the flow',
+      promptHtml.includes(`/notes/${noteId}`),
+    );
+
+    // `next` is attacker-controlled. Anything that is not a path inside this
+    // app must be dropped rather than followed. The query string itself is
+    // echoed back in Next's own payload whatever we do — what matters is the
+    // value that actually reaches the form, so that is what is asserted.
+    // The payload escapes its quotes, so the value ends at the first quote or
+    // backslash — which is exactly where a smuggled one would announce itself.
+    const nextProp = (html: string): string | null => {
+      const match = /nextHref\\?":\\?"([^"\\]*)/.exec(html);
+      return match ? match[1] : null;
+    };
+
+    const goodProp = nextProp(promptHtml);
+    check(
+      'a same-origin next reaches the form intact',
+      goodProp === `/notes/${noteId}`,
+      goodProp ?? 'not found',
+    );
+
+    for (const hostile of ['https://evil.example/x', '//evil.example/x', '/\\evil.example']) {
+      const page = await legacy.request(
+        `/verify-college-email?next=${encodeURIComponent(hostile)}`,
+      );
+      const prop = page.status === 200 ? nextProp(await page.text()) : null;
+      check(
+        `an off-site next is discarded: ${hostile}`,
+        prop === '/',
+        prop ?? `status ${page.status}`,
+      );
+    }
 
     // Addresses that must be refused, over the wire.
     for (const bad of [

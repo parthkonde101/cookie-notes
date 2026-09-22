@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { CheckCircle2, MailCheck } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -117,14 +117,13 @@ export function VerifyEmailForm({ email }: { email: string }) {
       {error && <Alert variant="error">{error}</Alert>}
       {notice && <Alert variant="info">{notice}</Alert>}
 
-      <div className="flex items-start gap-3 rounded-md border border-border bg-muted/40 p-3.5">
-        <MailCheck className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
-        <p className="min-w-0 text-sm text-muted-foreground">
-          We sent a 6-digit code to{' '}
-          <span className="break-all font-medium text-foreground">{email}</span>. It expires in 10
-          minutes.
-        </p>
-      </div>
+      {/* Address, instruction and expiry in one line — everything needed to
+          finish, and nothing else. */}
+      <p className="text-sm text-muted-foreground">
+        Enter the 6-digit code sent to{' '}
+        <span className="break-all font-medium text-foreground">{email}</span>. It expires in 10
+        minutes.
+      </p>
 
       <div className="space-y-2">
         <Label htmlFor="code">Verification code</Label>

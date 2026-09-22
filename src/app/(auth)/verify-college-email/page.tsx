@@ -8,6 +8,21 @@ export const metadata: Metadata = { title: 'Update your college email' };
 export const dynamic = 'force-dynamic';
 
 /**
+ * Only a path inside this app is allowed back out of `?next=`.
+ *
+ * The value arrives from the browser, so it is treated as untrusted: anything
+ * that is not a single-slash relative path — an absolute URL, a
+ * protocol-relative `//host`, a backslash trick — is discarded rather than
+ * corrected, and the student simply lands on the catalogue.
+ */
+function safeNext(value: string | undefined): string {
+  if (!value) return '/';
+  if (!value.startsWith('/')) return '/';
+  if (value.startsWith('//') || value.startsWith('/\\')) return '/';
+  return value;
+}
+
+/**
  * The one screen an unverified student can reach.
  *
  * `allowUnverified` is deliberate and load-bearing: every visitor here is by
@@ -17,11 +32,17 @@ export const dynamic = 'force-dynamic';
  * A student who has already verified is sent away, so the prompt can never
  * reappear once it has been answered.
  */
-export default async function VerifyCollegeEmailPage() {
+export default async function VerifyCollegeEmailPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string }>;
+}) {
   const { user } = await requireUser(undefined, { allowUnverified: true });
+  const { next } = await searchParams;
+  const nextHref = safeNext(next);
 
   if (!needsEmailMigration(user)) {
-    redirect(user.role === 'ADMIN' ? '/admin' : '/');
+    redirect(user.role === 'ADMIN' ? '/admin' : nextHref);
   }
 
   return (
@@ -29,7 +50,7 @@ export default async function VerifyCollegeEmailPage() {
       {/* The heading belongs to the form: it changes with the step, and the
           step is client state. */}
       <CardContent className="pt-6">
-        <CollegeEmailForm currentEmail={user.email} initialPending={user.pendingEmail} />
+        <CollegeEmailForm initialPending={user.pendingEmail} nextHref={nextHref} />
       </CardContent>
     </Card>
   );

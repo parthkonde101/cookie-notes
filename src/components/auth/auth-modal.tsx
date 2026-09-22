@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert } from '@/components/ui/feedback';
+import { RegisterForm } from '@/components/auth/register-form';
 import {
   Dialog,
   DialogContent,
@@ -87,7 +88,7 @@ export function AuthModalProvider({ children }: { children: React.ReactNode }) {
     setConflict(null);
   }
 
-  /** Sign-in only — registration is handed off to /register. */
+  /** Sign-in only. Registration is `RegisterForm`, which posts for itself. */
   async function submit(force = false) {
     setError(null);
     setPending(true);
@@ -208,101 +209,81 @@ export function AuthModalProvider({ children }: { children: React.ReactNode }) {
                 ))}
               </div>
 
-              <form
-                className="space-y-4"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void submit(false);
-                }}
-              >
-                {error && <Alert variant="error">{error}</Alert>}
+              {/* The register tab is the registration form itself. It used to
+                  be a paragraph about what signing up involves and a button to
+                  go and do it — a step that told the student nothing the form
+                  does not, and put a page between them and the fields. The form
+                  is the real one, imported rather than rebuilt, so there is
+                  still only one registration form in the app. */}
+              {mode === 'register' ? (
+                // The form carries its own "already have an account?" line, and
+                // the tabs above are the other way back, so nothing is added
+                // around it here.
+                <RegisterForm />
+              ) : (
+                <form
+                  className="space-y-4"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void submit(false);
+                  }}
+                >
+                  {error && <Alert variant="error">{error}</Alert>}
 
-
-                {/* Signing up needs a PRN, a college email, a verification code
-                    and two explicit agreements. Rebuilding that here would be a
-                    second registration form to keep in step with the first, in
-                    a dialog too small to read the terms in — so the modal hands
-                    the student over to the real page instead. */}
-                {mode === 'register' ? (
-                  <div className="space-y-4">
-                    <p className="text-sm leading-relaxed text-muted-foreground">
-                      Cookie Notes accounts are for MIT-WPU students. Creating one takes a minute:
-                      your PRN, your <span className="font-medium text-foreground">@mitwpu.edu.in</span>{' '}
-                      address, and a 6-digit code we email you to confirm it.
-                    </p>
-                    <Button asChild className="w-full" size="lg">
-                      <Link href={`/register?next=${encodeURIComponent(target?.redirectTo ?? '/')}`}>
-                        Continue to sign up
-                      </Link>
-                    </Button>
-                    <p className="text-center text-xs text-muted-foreground">
-                      Already have an account?{' '}
-                      <button
-                        type="button"
-                        onClick={() => setMode('signin')}
-                        className="font-medium text-foreground underline-offset-4 hover:underline"
-                      >
-                        Sign in
-                      </button>
-                    </p>
+                  <div className="space-y-2">
+                    <Label htmlFor="auth-email">Email</Label>
+                    <Input
+                      id="auth-email"
+                      type="email"
+                      autoComplete="email"
+                      required
+                      placeholder="you@mitwpu.edu.in"
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                    />
                   </div>
-                ) : (
-                  <>
-                    <div className="space-y-2">
-                      <Label htmlFor="auth-email">Email</Label>
-                      <Input
-                        id="auth-email"
-                        type="email"
-                        autoComplete="email"
-                        required
-                        placeholder="you@mitwpu.edu.in"
-                        value={email}
-                        onChange={(event) => setEmail(event.target.value)}
-                      />
-                    </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="auth-password">Password</Label>
-                      <Input
-                        id="auth-password"
-                        type="password"
-                        autoComplete="current-password"
-                        required
-                        value={password}
-                        onChange={(event) => setPassword(event.target.value)}
-                      />
-                    </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="auth-password">Password</Label>
+                    <Input
+                      id="auth-password"
+                      type="password"
+                      autoComplete="current-password"
+                      required
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                    />
+                  </div>
 
-                    <label
-                      htmlFor="auth-remember"
-                      className="flex cursor-pointer items-center gap-2.5 text-sm text-foreground/90"
+                  <label
+                    htmlFor="auth-remember"
+                    className="flex cursor-pointer items-center gap-2.5 text-sm text-foreground/90"
+                  >
+                    <input
+                      id="auth-remember"
+                      type="checkbox"
+                      checked={rememberMe}
+                      disabled={pending}
+                      onChange={(event) => setRememberMe(event.target.checked)}
+                      className="size-4 shrink-0 accent-primary"
+                    />
+                    Keep me signed in
+                  </label>
+
+                  <Button type="submit" className="w-full" size="lg" loading={pending}>
+                    Sign in
+                  </Button>
+
+                  <p className="text-center text-xs text-muted-foreground">
+                    <Link
+                      href="/forgot-password"
+                      className="underline-offset-4 hover:text-foreground hover:underline"
                     >
-                      <input
-                        id="auth-remember"
-                        type="checkbox"
-                        checked={rememberMe}
-                        disabled={pending}
-                        onChange={(event) => setRememberMe(event.target.checked)}
-                        className="size-4 shrink-0 accent-primary"
-                      />
-                      Keep me signed in
-                    </label>
-
-                    <Button type="submit" className="w-full" size="lg" loading={pending}>
-                      Sign in
-                    </Button>
-
-                    <p className="text-center text-xs text-muted-foreground">
-                      <Link
-                        href="/forgot-password"
-                        className="underline-offset-4 hover:text-foreground hover:underline"
-                      >
-                        Forgot your password?
-                      </Link>
-                    </p>
-                  </>
-                )}
-              </form>
+                      Forgot your password?
+                    </Link>
+                  </p>
+                </form>
+              )}
             </>
           )}
         </DialogContent>
