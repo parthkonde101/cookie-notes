@@ -151,10 +151,11 @@ export function PdfPage({
         // The effect may have been torn down while the page was painting.
         if (cancelled) return;
 
-        // Burn the watermark into the same pixels as the content. The scale is
-        // device pixels per CSS pixel, so the watermark keeps a constant
-        // on-screen size even when the resolution was stepped back above.
-        drawWatermark(ctx, pixelWidth, pixelHeight, identity, pixelWidth / cssWidth);
+        // Burn the watermark into the same pixels as the content, after the
+        // page has finished painting so nothing can render over it. It sizes
+        // itself from the canvas it is given, so a resolution stepped back for
+        // Safari's limit produces the same mark in the same place.
+        drawWatermark(ctx, pixelWidth, pixelHeight, identity);
 
         taskRef.current = null;
         setStatus('done');
