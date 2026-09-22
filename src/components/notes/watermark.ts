@@ -22,6 +22,12 @@ export interface WatermarkIdentity {
  * canvas capture; this cannot be separated from the page without also
  * destroying the page.
  *
+ * ## Weight
+ *
+ * Near-black at low alpha, regular weight, one line. The mark has to be legible
+ * in a screenshot taken weeks later, and no heavier than that — these are
+ * somebody's revision notes, and every extra gram of ink is read through.
+ *
  * ## Why exactly one mark, and only the email
  *
  * Earlier this tiled two lines of identity across the whole page. That was
@@ -58,7 +64,7 @@ export function drawWatermark(
   ctx.save();
 
   const probe = 100;
-  ctx.font = `600 ${probe}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
+  ctx.font = `400 ${probe}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
   const measured = ctx.measureText(email).width || 1;
 
   // Clamped so a very long address cannot shrink to nothing and a very short
@@ -67,28 +73,37 @@ export function drawWatermark(
     Math.min(Math.max((probe * target) / measured, diagonal * 0.028), diagonal * 0.085),
   );
 
-  ctx.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
+  // Regular weight, not semibold: at this size the mark is already impossible
+  // to miss, and the extra stroke width was reading as a grey slab laid over
+  // the notes rather than as a line of text behind them.
+  ctx.font = `400 ${fontSize}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  // The page's own diagonal, so the mark rises corner to corner whatever the
+  // The page's own diagonal, so the mark runs corner to corner whatever the
   // aspect ratio rather than sitting at a fixed angle that only suits portrait.
+  // Positive angle: top-left down to bottom-right, following the reading eye.
   ctx.translate(width / 2, height / 2);
-  ctx.rotate(-Math.atan2(height, width));
+  ctx.rotate(Math.atan2(height, width));
 
-  // Two passes, because one is not enough to be sure it survives.
+  // Near-black ink, laid on once.
   //
-  // `multiply` darkens — it shows on the white paper that makes up most of a
-  // page, and disappears over black. `screen` lightens — the exact inverse. Run
-  // both and the address is visible over body text, over a dark diagram and
-  // over a photographed slide alike, while neither pass can wash out the
-  // content underneath at these alphas.
+  // `multiply` behaves like ink on paper: it darkens what is under it and can
+  // never brighten it, so on white paper this is the whole watermark and it
+  // reads as dark text rather than as grey fog.
   ctx.globalCompositeOperation = 'multiply';
-  ctx.fillStyle = 'rgba(41, 37, 46, 0.13)';
+  ctx.fillStyle = 'rgba(8, 8, 10, 0.10)';
   ctx.fillText(email, 0, 0);
 
+  // A whisper of light, for pages that are themselves near-black — dark slides,
+  // photographed boards — where ink alone would leave nothing to read.
+  //
+  // Deliberately far weaker than the dark pass. At anything like equal strength
+  // the two fight each other on white paper: the lift cancels the ink and the
+  // result is the washed-out grey this replaces. At 0.05 it is invisible on
+  // paper and just enough on black.
   ctx.globalCompositeOperation = 'screen';
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
   ctx.fillText(email, 0, 0);
 
   ctx.restore();
