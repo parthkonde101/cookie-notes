@@ -95,15 +95,21 @@ export function drawWatermark(
   ctx.fillStyle = 'rgba(8, 8, 10, 0.10)';
   ctx.fillText(email, 0, 0);
 
-  // A whisper of light, for pages that are themselves near-black — dark slides,
-  // photographed boards — where ink alone would leave nothing to read.
+  // The lift, for pages that are themselves near-black — dark slides, dark
+  // note paper, photographed boards — where ink alone leaves nothing to read.
   //
-  // Deliberately far weaker than the dark pass. At anything like equal strength
-  // the two fight each other on white paper: the lift cancels the ink and the
-  // result is the washed-out grey this replaces. At 0.05 it is invisible on
-  // paper and just enough on black.
+  // On Cookie Notes this pass is not a fallback, it is the watermark: the real
+  // notes are dark throughout, so the ink above barely registers and everything
+  // legible comes from here. Measured against a no-watermark render of a real
+  // unit, 0.05 gave a mean luminance change of 7 and did not survive a 50%
+  // downscale; 0.08 gives 12 and does.
+  //
+  // Still deliberately weaker than the dark pass. At anything like equal
+  // strength the two fight each other on white paper — the lift cancels the ink
+  // and the result is a washed-out grey — so this is the number to raise if
+  // dark pages ever need more, and the one to leave alone if light ones do.
   ctx.globalCompositeOperation = 'screen';
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
   ctx.fillText(email, 0, 0);
 
   ctx.restore();
