@@ -48,14 +48,28 @@ import { drawWatermark, type WatermarkIdentity } from '@/components/notes/waterm
  */
 const MAX_CANVAS_PIXELS = 16_777_216;
 
-/** Upper bound on the CSS width a page is rasterised for. */
-const MAX_PAGE_WIDTH = 1100;
+/**
+ * Upper bound on the CSS width a page is rasterised for at 100%.
+ *
+ * Exported because the viewer lays the page column out to exactly the width a
+ * page will rasterise to — the two have to agree or the canvas and its box
+ * disagree about how big the page is.
+ */
+export const MAX_PAGE_WIDTH = 1100;
 
 export interface PdfPageProps {
   doc: import('pdfjs-dist').PDFDocumentProxy;
   pageNumber: number;
   /** CSS pixel width available to the page. Re-renders when it changes. */
   width: number;
+  /**
+   * Document-wide zoom, 1 = fit to the available width.
+   *
+   * Applied to the CSS width the page is rasterised for, so pdf.js paints more
+   * pixels rather than the browser stretching the ones it has — and the
+   * watermark, which sizes itself from the canvas it is given, scales with it.
+   */
+  zoom: number;
   identity: WatermarkIdentity;
   /** Lazy rendering: only pages near the viewport paint. */
   shouldRender: boolean;
@@ -69,6 +83,7 @@ export function PdfPage({
   doc,
   pageNumber,
   width,
+  zoom,
   identity,
   shouldRender,
   registerTask,
@@ -113,7 +128,10 @@ export function PdfPage({
         if (cancelled) return;
 
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const cssWidth = Math.min(width, MAX_PAGE_WIDTH);
+        // Zoom multiplies the CSS width the page is drawn at, so pdf.js is
+        // asked for a larger bitmap rather than the browser stretching a small
+        // one. The canvas-pixel clamp below still has the last word.
+        const cssWidth = Math.min(width, MAX_PAGE_WIDTH) * zoom;
         const base = page.getViewport({ scale: 1 });
 
         // Fit the page to the available width, then step the resolution back
@@ -180,7 +198,7 @@ export function PdfPage({
       taskRef.current = null;
       unregister?.();
     };
-  }, [doc, pageNumber, width, identity, shouldRender, attempt, registerTask]);
+  }, [doc, pageNumber, width, zoom, identity, shouldRender, attempt, registerTask]);
 
   // Before the first paint the wrapper holds a page-shaped placeholder so the
   // scroll height is stable. A page that failed before it ever painted shrinks

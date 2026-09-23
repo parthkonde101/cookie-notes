@@ -7,12 +7,14 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  Minus,
+  Plus,
   Loader2,
   ShieldCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/feedback';
-import { PdfPage } from '@/components/notes/pdf-page';
+import { MAX_PAGE_WIDTH, PdfPage } from '@/components/notes/pdf-page';
 import { watermarkCaption, type WatermarkIdentity } from '@/components/notes/watermark';
 import { cn } from '@/lib/utils';
 
@@ -43,6 +45,18 @@ interface OpenResponse {
 }
 
 type Status = 'loading' | 'ready' | 'error';
+
+/**
+ * The zoom stops, smallest to largest. 1 is "fit the available width", which is
+ * what the reader has always done and stays the default.
+ *
+ * Fixed stops rather than a free multiplier: every step is a full re-rasterise
+ * of every painted page, so a continuous control would queue a lot of work for
+ * differences nobody can see. Quarter steps land on the round numbers people
+ * expect — 50, 75, 100, 125, 150, 175, 200.
+ */
+const ZOOM_STOPS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const;
+const DEFAULT_ZOOM_INDEX = ZOOM_STOPS.indexOf(1);
 
 /**
  * In-app PDF reader.
@@ -77,6 +91,9 @@ export function NoteViewer({
   const [currentPage, setCurrentPage] = useState(1);
   const [visiblePages, setVisiblePages] = useState<ReadonlySet<number>>(() => new Set([1]));
   const [pageWidth, setPageWidth] = useState(0);
+  // Zoom is held once for the whole document, so every page rasterises at the
+  // same scale and the reader never has pages of two different sizes.
+  const [zoomIndex, setZoomIndex] = useState(DEFAULT_ZOOM_INDEX);
   const [obscured, setObscured] = useState(false);
   const [identity, setIdentity] = useState<WatermarkIdentity | null>(null);
 
@@ -386,6 +403,18 @@ export function NoteViewer({
     [pageCount],
   );
 
+  const zoom = ZOOM_STOPS[zoomIndex];
+
+  /**
+   * The width of the page column.
+   *
+   * The same expression `PdfPage` rasterises to, so the box a page sits in and
+   * the canvas inside it always agree. Below 100% the column narrows and stays
+   * centred; above it the column outgrows the reader and the scroller takes
+   * over horizontally.
+   */
+  const contentWidth = pageWidth > 0 ? Math.min(pageWidth, MAX_PAGE_WIDTH) * zoom : undefined;
+
   if (status === 'error') {
     return (
       <div className="mx-auto max-w-lg px-4 py-16">
@@ -417,7 +446,37 @@ export function NoteViewer({
             <p className="truncate text-xs text-muted-foreground">{subtitle}</p>
           </div>
 
-          <div className="flex items-center gap-1 rounded-md border border-border px-1">
+          {/* Zoom. Same shape as the page control beside it so the toolbar
+              reads as one row of controls rather than two competing widgets. */}
+          <div className="flex shrink-0 items-center gap-1 rounded-md border border-border px-1">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Zoom out"
+              disabled={status !== 'ready' || zoomIndex <= 0}
+              onClick={() => setZoomIndex((index) => Math.max(0, index - 1))}
+            >
+              <Minus className="size-4" />
+            </Button>
+            <span
+              className="min-w-[3rem] text-center text-xs tabular-nums"
+              aria-live="polite"
+              aria-label={`Zoom ${Math.round(zoom * 100)} percent`}
+            >
+              {Math.round(zoom * 100)}%
+            </span>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Zoom in"
+              disabled={status !== 'ready' || zoomIndex >= ZOOM_STOPS.length - 1}
+              onClick={() => setZoomIndex((index) => Math.min(ZOOM_STOPS.length - 1, index + 1))}
+            >
+              <Plus className="size-4" />
+            </Button>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1 rounded-md border border-border px-1">
             <Button
               variant="ghost"
               size="icon-sm"
@@ -447,7 +506,8 @@ export function NoteViewer({
       <div
         ref={containerRef}
         className={cn(
-          'protected-content no-select relative flex-1 overflow-y-auto bg-muted/30 px-3 py-6 sm:px-6',
+          // overflow-x so a zoomed page can be scrolled to rather than clipped.
+          'protected-content no-select relative flex-1 overflow-auto bg-muted/30 px-3 py-6 sm:px-6',
           obscured && 'select-none',
         )}
       >
@@ -458,7 +518,10 @@ export function NoteViewer({
           </div>
         )}
 
-        <div className="mx-auto flex max-w-[1100px] flex-col items-center gap-6">
+        <div
+          className="mx-auto flex flex-col items-center gap-6"
+          style={contentWidth ? { width: contentWidth } : undefined}
+        >
           {doc &&
             identity &&
             pages.map((pageNumber) => (
@@ -467,6 +530,7 @@ export function NoteViewer({
                 doc={doc}
                 pageNumber={pageNumber}
                 width={pageWidth}
+                zoom={zoom}
                 identity={identity}
                 shouldRender={visiblePages.has(pageNumber)}
                 registerTask={registerTask}
