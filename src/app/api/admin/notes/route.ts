@@ -8,6 +8,7 @@ import { recordEvent } from '@/lib/analytics/events';
 import { writeAudit } from '@/lib/audit';
 import { notifyNoteReady, type NotifyNoteReadyResult } from '@/lib/notes/notifications';
 import { firstError, noteUploadSchema } from '@/lib/validation';
+import { parseProgram, programLabel } from '@/lib/program';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,12 +52,14 @@ export async function POST(request: NextRequest) {
     const notifyAll = String(form.get('notifyAll') ?? '') === 'true';
 
     // The unit must exist and belong to the chosen subject — a client is never
-    // trusted to have sent a matching pair.
+    // trusted to have sent a matching pair. The subject's program comes back in
+    // the same query, for the cross-program check below.
     const unit = await prisma.unit.findFirst({
       where: { id: meta.unitId, subjectId: meta.subjectId },
       select: {
         id: true,
         name: true,
+        subject: { select: { semester: { select: { program: true } } } },
         notes: {
           select: { id: true, version: true, status: true, publishedAt: true, archivedAt: true },
           take: 1,
@@ -64,6 +67,29 @@ export async function POST(request: NextRequest) {
       },
     });
     if (!unit) throw Errors.validation('That unit does not belong to the selected subject.');
+
+    /*
+     * CROSS-PROGRAM GUARD.
+     *
+     * The form says which catalogue the admin believes they are filing into;
+     * `unit.subject.semester.program` is where the PDF would actually land. A
+     * stale tab left open across a program switch, a double-submit, or a
+     * hand-made request can make those disagree, and nothing downstream would
+     * catch it — a note has no program of its own, so a misfiled PDF simply
+     * appears on the wrong shelf and looks correct.
+     *
+     * The claimed program is only ever compared, never written. When the form
+     * does not send one (an older client), there is nothing to contradict and
+     * the placement stands on its own: the unit still had to belong to the
+     * subject, which is the check that was always here.
+     */
+    const claimedProgram = parseProgram(form.get('program'));
+    const actualProgram = unit.subject.semester.program;
+    if (claimedProgram && claimedProgram !== actualProgram) {
+      throw Errors.validation(
+        `That unit is in the ${programLabel(actualProgram)} catalogue, but this upload is filing into ${programLabel(claimedProgram)}. Switch programme and try again.`,
+      );
+    }
 
     const existing = unit.notes[0] ?? null;
     const priceMinor = Math.round((meta.price ?? 0) * 100);

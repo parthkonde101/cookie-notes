@@ -8,6 +8,7 @@ import { requestContext } from '@/lib/request';
 import { recordEvent } from '@/lib/analytics/events';
 import { writeAudit } from '@/lib/audit';
 import { firstError, semesterSchema, subjectSchema, topicSchema, unitSchema } from '@/lib/validation';
+import { DEFAULT_PROGRAM, parseProgram, programLabel } from '@/lib/program';
 import { slugify } from '@/lib/utils';
 import type { ActionResult } from '@/app/admin/_actions/users';
 
@@ -43,8 +44,18 @@ export async function createSemesterAction(form: FormData): Promise<ActionResult
       name: value(form, 'name'),
       description: value(form, 'description'),
       position: value(form, 'position') || 0,
+      program: value(form, 'program') || undefined,
     });
     if (!parsed.success) throw Errors.validation(firstError(parsed.error));
+
+    /*
+     * A semester is where a program is *decided* rather than derived — it is
+     * the top of the tree, so there is no parent to inherit from. Falling back
+     * to the column default keeps a client that sends no program working, and
+     * an unrecognised value was already rejected by the schema above rather
+     * than quietly filed under B.Tech.
+     */
+    const program = parsed.data.program ?? DEFAULT_PROGRAM;
 
     const semester = await prisma.semester.create({
       data: {
@@ -52,6 +63,7 @@ export async function createSemesterAction(form: FormData): Promise<ActionResult
         slug: await uniqueSlug(parsed.data.name, 'semester'),
         description: parsed.data.description || null,
         position: parsed.data.position ?? 0,
+        program,
       },
     });
 
@@ -157,6 +169,31 @@ export async function createSubjectAction(form: FormData): Promise<ActionResult>
       position: value(form, 'position') || 0,
     });
     if (!parsed.success) throw Errors.validation(firstError(parsed.error));
+
+    /*
+     * CROSS-PROGRAM GUARD.
+     *
+     * A subject has no program of its own — it takes its semester's. So the
+     * only way to file one into the wrong catalogue is to pick a semester from
+     * the other one, which the form cannot offer but a stale tab left open
+     * across a program switch can still submit. The claimed program is
+     * compared with the semester's and never written.
+     *
+     * Absent (an older client), there is nothing to contradict and the
+     * semester's own program stands, exactly as it did before this existed.
+     */
+    const semester = await prisma.semester.findUnique({
+      where: { id: parsed.data.semesterId },
+      select: { program: true },
+    });
+    if (!semester) throw Errors.validation('That semester no longer exists.');
+
+    const claimedProgram = parseProgram(value(form, 'program') || undefined);
+    if (claimedProgram && claimedProgram !== semester.program) {
+      throw Errors.validation(
+        `That semester is in the ${programLabel(semester.program)} catalogue, not ${programLabel(claimedProgram)}. Switch programme and try again.`,
+      );
+    }
 
     const duplicate = await prisma.subject.findFirst({
       where: { semesterId: parsed.data.semesterId, name: parsed.data.name },

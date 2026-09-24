@@ -5,6 +5,7 @@ import { Input, Select, Textarea } from '@/components/ui/input';
 import { ActionForm, Field } from '@/components/admin/action-form';
 import { updateNoteAction } from '@/app/admin/_actions/notes';
 import type { CatalogSemester } from '@/lib/admin/catalog';
+import { programLabel, stripProgramPrefix } from '@/lib/program';
 
 interface Props {
   noteId: string;
@@ -34,12 +35,22 @@ export function NoteEditForm({ noteId, catalog, currencySymbol, initial }: Props
   const [subjectId, setSubjectId] = useState(initial.subjectId);
   const [unitId, setUnitId] = useState(initial.unitId);
 
+  /*
+   * Every subject, from both programs — this picker has to be able to show the
+   * one the note is already in, whichever catalogue that is.
+   *
+   * The program therefore leads each label, so a move across catalogues is
+   * visible before it is made rather than after. The server refuses one
+   * regardless; the label is what stops an admin trying.
+   */
   const subjects = useMemo(
     () =>
       catalog.flatMap((semester) =>
         semester.subjects.map((subject) => ({
           id: subject.id,
-          label: `${semester.name} · ${subject.name}`,
+          // The programme leads, then the semester with its own copy of the
+          // programme removed — "B.Tech · B.Tech Semester 1 · …" said it twice.
+          label: `${programLabel(semester.program)} · ${stripProgramPrefix(semester.name, semester.program)} · ${subject.name}`,
           units: subject.units,
         })),
       ),

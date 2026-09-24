@@ -32,6 +32,13 @@ import { ActionButton } from '@/components/admin/action-button';
 import { ActionForm, Field } from '@/components/admin/action-form';
 import { NoteUploadForm } from '@/components/admin/note-upload-form';
 import { SubjectExtras } from '@/components/admin/subject-extras';
+import { ProgramSelector } from '@/components/catalog/program-selector';
+import {
+  ADMIN_PROGRAM_COOKIE,
+  programLabel,
+  stripProgramPrefix,
+  type Program,
+} from '@/lib/program';
 import {
   createSemesterAction,
   createSubjectAction,
@@ -43,6 +50,9 @@ import {
 } from '@/app/admin/_actions/catalog';
 import type { CatalogSemester, CatalogUnit, PlacementOption } from '@/lib/admin/catalog';
 import { cn, formatBytes, pluralize } from '@/lib/utils';
+
+/** The region the program switch swaps, for its `aria-controls`. */
+const TREE_ID = 'admin-catalogue-tree';
 
 type DialogState =
   | { kind: 'none' }
@@ -63,15 +73,30 @@ type DialogState =
  * A unit holds one PDF, so uploading into a unit that already has one replaces
  * it. Individual notes still have a detail page for status, pricing, access and
  * version history.
+ *
+ * ## Scoped to one program
+ *
+ * Everything on this screen belongs to `program`: the tree was loaded for it,
+ * the placements were flattened from that tree, and anything created here is
+ * created inside it. The selector at the top switches — an RSC navigation that
+ * reloads the tree, not a client-side filter — so there is never a moment where
+ * a B.Tech unit is listed while the header says Polytechnic.
+ *
+ * The program is stated in the dialogs as well as the header. An admin who
+ * switched programs, then opened "Upload PDF" from muscle memory, should be
+ * told which catalogue they are filing into before they pick a file, not after.
  */
 export function ContentManager({
   catalog,
   placements,
+  program,
   maxUploadMb,
   currencySymbol,
 }: {
   catalog: CatalogSemester[];
   placements: PlacementOption[];
+  /** The program this whole screen is managing. */
+  program: Program;
   maxUploadMb: number;
   currencySymbol: string;
 }) {
@@ -125,19 +150,45 @@ export function ContentManager({
       .filter((semester) => matches(semester.name) || semester.subjects.length > 0);
   }, [catalog, query]);
 
+  const label = programLabel(program);
+
+  /*
+   * The program switch, rendered above everything including the empty state —
+   * an admin whose Polytechnic catalogue is empty still needs the way back to
+   * B.Tech, and an empty screen with no switch on it reads as a broken page.
+   *
+   * Centred, because it is the one control that changes what the whole screen
+   * means. Everything below it stays left-aligned: this is a management
+   * surface, and a centred tree would be harder to scan, not prettier.
+   */
+  const selector = (
+    <div className="mt-6 flex flex-col items-center gap-2 border-b border-border pb-6">
+      <ProgramSelector
+        active={program}
+        controls={TREE_ID}
+        cookieName={ADMIN_PROGRAM_COOKIE}
+        label="Programme being managed"
+      />
+      <p className="text-xs text-muted-foreground">
+        Managing the <span className="font-medium text-foreground">{label}</span> catalogue
+      </p>
+    </div>
+  );
+
   // ---- Empty state --------------------------------------------------------
   if (catalog.length === 0) {
     return (
       <>
+        {selector}
         <EmptyState
-          className="mt-8 py-16"
+          className="mt-6 py-16"
           icon={Layers}
-          title="No academic content yet"
-          description="Build your college's structure here: start with a semester, then add subjects and their units, and upload one PDF into each unit."
+          title={`No ${label} content yet`}
+          description={`Build the ${label} structure here: start with a semester, then add subjects and their units, and upload one PDF into each unit. The other programme's catalogue is managed separately.`}
           action={
             <Button onClick={() => setDialog({ kind: 'semester' })}>
               <Plus className="size-4" />
-              Create semester
+              Create {label} semester
             </Button>
           }
         />
@@ -149,11 +200,13 @@ export function ContentManager({
   // ---- Tree ---------------------------------------------------------------
   return (
     <>
-      <div className="mt-6 flex flex-wrap items-center gap-2">
+      {selector}
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Filter by unit, subject or file"
+          placeholder={`Filter ${label} units, subjects or files`}
           className="min-w-[200px] max-w-sm flex-1"
           aria-label="Filter content"
         />
@@ -179,200 +232,220 @@ export function ContentManager({
         Subject → units, one PDF per unit. Past papers hang off the subject itself, one per year.
       </p>
 
-      {filtered.length === 0 ? (
-        <EmptyState className="mt-6" icon={FileText} title={`Nothing matches “${query}”`} />
-      ) : (
-        <div className="mt-5 space-y-3">
-          {filtered.map((semester) => {
-            const open = !collapsed.has(semester.id);
-            // Coverage, not a note total: what an admin wants at a glance is how
-            // much of the semester is still missing its PDFs.
-            const units = semester.subjects.reduce(
-              (sum, subject) => sum + subject.units.length,
-              0,
-            );
-            const missing = semester.subjects.reduce(
-              (sum, subject) => sum + subject.missingCount,
-              0,
-            );
+      {/*
+       * `key={program}` makes switching read as a transition: the old tree is
+       * unmounted and the new one fades in, rather than rows silently changing
+       * underneath the cursor. It also resets the collapse state, which is
+       * correct — a semester id from the other catalogue means nothing here.
+       */}
+      <div
+        key={program}
+        id={TREE_ID}
+        role="tabpanel"
+        aria-label={`${label} catalogue`}
+        className="animate-fade-in motion-reduce:animate-none"
+      >
+        {filtered.length === 0 ? (
+          <EmptyState className="mt-6" icon={FileText} title={`Nothing matches “${query}”`} />
+        ) : (
+          <div className="mt-5 space-y-3">
+            {filtered.map((semester) => {
+              const open = !collapsed.has(semester.id);
+              // Coverage, not a note total: what an admin wants at a glance is how
+              // much of the semester is still missing its PDFs.
+              const units = semester.subjects.reduce(
+                (sum, subject) => sum + subject.units.length,
+                0,
+              );
+              const missing = semester.subjects.reduce(
+                (sum, subject) => sum + subject.missingCount,
+                0,
+              );
 
-            return (
-              <section key={semester.id} className="overflow-hidden rounded-lg border border-border">
-                <div className="flex flex-wrap items-center gap-2 bg-card/60 px-3 py-2.5">
-                  <button
-                    type="button"
-                    onClick={() => toggle(semester.id)}
-                    aria-expanded={open}
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                  >
-                    <ChevronRight
-                      className={cn(
-                        'size-4 shrink-0 text-muted-foreground transition-transform',
-                        open && 'rotate-90',
-                      )}
-                    />
-                    <span className="truncate font-medium">{semester.name}</span>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {pluralize(semester.subjects.length, 'subject')} ·{' '}
-                      {units - missing}/{units} units uploaded
-                    </span>
-                    {semester.isArchived && <Badge variant="outline">archived</Badge>}
-                  </button>
-
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setDialog({ kind: 'subject', semesterId: semester.id })}
+              return (
+                <section key={semester.id} className="overflow-hidden rounded-lg border border-border">
+                  <div className="flex flex-wrap items-center gap-2 bg-card/60 px-3 py-2.5">
+                    <button
+                      type="button"
+                      onClick={() => toggle(semester.id)}
+                      aria-expanded={open}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
                     >
-                      <Plus className="size-3.5" />
-                      Subject
-                    </Button>
-                    {semester.subjects.length === 0 && (
-                      <ActionButton
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`Delete ${semester.name}`}
-                        action={deleteSemesterAction.bind(null, semester.id)}
-                        confirm={{
-                          title: `Delete ${semester.name}?`,
-                          description: 'It has no subjects, so nothing else is affected.',
-                          confirmLabel: 'Delete',
-                          destructive: true,
-                        }}
-                      >
-                        <Trash2 className="size-3.5" />
-                      </ActionButton>
-                    )}
-                  </div>
-                </div>
+                      <ChevronRight
+                        className={cn(
+                          'size-4 shrink-0 text-muted-foreground transition-transform',
+                          open && 'rotate-90',
+                        )}
+                      />
+                      {/* The selector above says the programme; the row need
+                          not repeat it. Display only — the stored name, and
+                          the one the delete confirmation quotes, are the real
+                          thing. */}
+                      <span className="truncate font-medium">
+                        {stripProgramPrefix(semester.name, semester.program)}
+                      </span>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {pluralize(semester.subjects.length, 'subject')} ·{' '}
+                        {units - missing}/{units} units uploaded
+                      </span>
+                      {semester.isArchived && <Badge variant="outline">archived</Badge>}
+                    </button>
 
-                {open && (
-                  <div className="space-y-3 border-t border-border p-3">
-                    {semester.subjects.length === 0 ? (
-                      <p className="px-1 py-3 text-sm text-muted-foreground">
-                        No subjects yet.{' '}
-                        <button
-                          type="button"
-                          className="font-medium text-primary underline-offset-4 hover:underline"
-                          onClick={() => setDialog({ kind: 'subject', semesterId: semester.id })}
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setDialog({ kind: 'subject', semesterId: semester.id })}
+                      >
+                        <Plus className="size-3.5" />
+                        Subject
+                      </Button>
+                      {semester.subjects.length === 0 && (
+                        <ActionButton
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Delete ${semester.name}`}
+                          action={deleteSemesterAction.bind(null, semester.id)}
+                          confirm={{
+                            title: `Delete ${semester.name}?`,
+                            description: 'It has no subjects, so nothing else is affected.',
+                            confirmLabel: 'Delete',
+                            destructive: true,
+                          }}
                         >
-                          Add the first one
-                        </button>
-                        .
-                      </p>
-                    ) : (
-                      semester.subjects.map((subject) => (
-                        <div key={subject.id} className="rounded-md border border-border bg-card p-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <div className="flex min-w-0 flex-1 items-center gap-2">
-                              <span className="truncate font-medium">{subject.name}</span>
-                              {subject.code && <Badge variant="outline">{subject.code}</Badge>}
-                              <span className="shrink-0 text-xs text-muted-foreground">
-                                {subject.units.length === 0
-                                  ? 'no units'
-                                  : `${subject.units.length - subject.missingCount}/${subject.units.length} units uploaded`}
-                              </span>
+                          <Trash2 className="size-3.5" />
+                        </ActionButton>
+                      )}
+                    </div>
+                  </div>
+
+                  {open && (
+                    <div className="space-y-3 border-t border-border p-3">
+                      {semester.subjects.length === 0 ? (
+                        <p className="px-1 py-3 text-sm text-muted-foreground">
+                          No subjects yet.{' '}
+                          <button
+                            type="button"
+                            className="font-medium text-primary underline-offset-4 hover:underline"
+                            onClick={() => setDialog({ kind: 'subject', semesterId: semester.id })}
+                          >
+                            Add the first one
+                          </button>
+                          .
+                        </p>
+                      ) : (
+                        semester.subjects.map((subject) => (
+                          <div key={subject.id} className="rounded-md border border-border bg-card p-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="flex min-w-0 flex-1 items-center gap-2">
+                                <span className="truncate font-medium">{subject.name}</span>
+                                {subject.code && <Badge variant="outline">{subject.code}</Badge>}
+                                <span className="shrink-0 text-xs text-muted-foreground">
+                                  {subject.units.length === 0
+                                    ? 'no units'
+                                    : `${subject.units.length - subject.missingCount}/${subject.units.length} units uploaded`}
+                                </span>
+                              </div>
+
+                              <div className="flex shrink-0 items-center gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() =>
+                                    setDialog({
+                                      kind: 'unit',
+                                      subjectId: subject.id,
+                                      subjectLabel: subject.name,
+                                    })
+                                  }
+                                >
+                                  <Plus className="size-3.5" />
+                                  Unit
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={subject.units.length === 0}
+                                  onClick={() => setDialog({ kind: 'upload', subjectId: subject.id })}
+                                >
+                                  <FilePlus2 className="size-3.5" />
+                                  PDF
+                                </Button>
+                                {subject.noteCount === 0 && subject.units.length === 0 && (
+                                  <ActionButton
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={`Delete ${subject.name}`}
+                                    action={deleteSubjectAction.bind(null, subject.id)}
+                                    confirm={{
+                                      title: `Delete ${subject.name}?`,
+                                      description: 'It has no units or notes.',
+                                      confirmLabel: 'Delete',
+                                      destructive: true,
+                                    }}
+                                  >
+                                    <Trash2 className="size-3.5" />
+                                  </ActionButton>
+                                )}
+                              </div>
                             </div>
 
-                            <div className="flex shrink-0 items-center gap-1">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() =>
-                                  setDialog({
-                                    kind: 'unit',
-                                    subjectId: subject.id,
-                                    subjectLabel: subject.name,
-                                  })
-                                }
-                              >
-                                <Plus className="size-3.5" />
-                                Unit
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                disabled={subject.units.length === 0}
-                                onClick={() => setDialog({ kind: 'upload', subjectId: subject.id })}
-                              >
-                                <FilePlus2 className="size-3.5" />
-                                PDF
-                              </Button>
-                              {subject.noteCount === 0 && subject.units.length === 0 && (
-                                <ActionButton
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  aria-label={`Delete ${subject.name}`}
-                                  action={deleteSubjectAction.bind(null, subject.id)}
-                                  confirm={{
-                                    title: `Delete ${subject.name}?`,
-                                    description: 'It has no units or notes.',
-                                    confirmLabel: 'Delete',
-                                    destructive: true,
-                                  }}
-                                >
-                                  <Trash2 className="size-3.5" />
-                                </ActionButton>
+                            <SubjectExtras
+                              subjectId={subject.id}
+                              subjectName={subject.name}
+                              cover={subject.cover}
+                              pyqs={subject.pyqs}
+                              maxUploadMb={maxUploadMb}
+                            />
+
+                            {subject.looseNotes.length > 0 && (
+                              <div className="mt-3 space-y-1">
+                                <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                                  Unfiled
+                                </p>
+                                {subject.looseNotes.map((note) => (
+                                  <NoteRow
+                                    key={note.id}
+                                    note={note}
+                                    currencySymbol={currencySymbol}
+                                  />
+                                ))}
+                              </div>
+                            )}
+
+                            <div className="mt-3 space-y-2">
+                              {subject.units.length === 0 ? (
+                                <p className="text-xs text-muted-foreground">
+                                  No units yet — add one, then upload its PDF.
+                                </p>
+                              ) : (
+                                subject.units.map((unit) => (
+                                  <UnitRow
+                                    key={unit.id}
+                                    unit={unit}
+                                    currencySymbol={currencySymbol}
+                                    onUpload={() =>
+                                      setDialog({
+                                        kind: 'upload',
+                                        subjectId: subject.id,
+                                        unitId: unit.id,
+                                      })
+                                    }
+                                  />
+                                ))
                               )}
                             </div>
                           </div>
-
-                          <SubjectExtras
-                            subjectId={subject.id}
-                            subjectName={subject.name}
-                            cover={subject.cover}
-                            pyqs={subject.pyqs}
-                            maxUploadMb={maxUploadMb}
-                          />
-
-                          {subject.looseNotes.length > 0 && (
-                            <div className="mt-3 space-y-1">
-                              <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                                Unfiled
-                              </p>
-                              {subject.looseNotes.map((note) => (
-                                <NoteRow
-                                  key={note.id}
-                                  note={note}
-                                  currencySymbol={currencySymbol}
-                                />
-                              ))}
-                            </div>
-                          )}
-
-                          <div className="mt-3 space-y-2">
-                            {subject.units.length === 0 ? (
-                              <p className="text-xs text-muted-foreground">
-                                No units yet — add one, then upload its PDF.
-                              </p>
-                            ) : (
-                              subject.units.map((unit) => (
-                                <UnitRow
-                                  key={unit.id}
-                                  unit={unit}
-                                  currencySymbol={currencySymbol}
-                                  onUpload={() =>
-                                    setDialog({
-                                      kind: 'upload',
-                                      subjectId: subject.id,
-                                      unitId: unit.id,
-                                    })
-                                  }
-                                />
-                              ))
-                            )}
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                )}
-              </section>
-            );
-          })}
-        </div>
-      )}
+                        ))
+                      )}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {renderDialog()}
     </>
@@ -385,14 +458,24 @@ export function ContentManager({
           {dialog.kind === 'semester' && (
             <>
               <DialogHeader>
-                <DialogTitle>New semester</DialogTitle>
-                <DialogDescription>The top level of your academic structure.</DialogDescription>
+                <DialogTitle>New {label} semester</DialogTitle>
+                <DialogDescription>
+                  The top level of the {label} structure. It will not appear in the other
+                  programme&rsquo;s catalogue.
+                </DialogDescription>
               </DialogHeader>
               <ActionForm
                 action={createSemesterAction}
-                submitLabel="Create semester"
+                submitLabel={`Create ${label} semester`}
                 onSuccess={close}
               >
+                {/*
+                 * The program the screen is managing, submitted with the form.
+                 * The action validates it rather than trusting it — this field
+                 * decides which catalogue a *new* semester joins, and a new
+                 * semester has no parent to derive it from.
+                 */}
+                <input type="hidden" name="program" value={program} />
                 <Field label="Name" htmlFor="semester-name">
                   <Input id="semester-name" name="name" placeholder="Semester 6" required autoFocus />
                 </Field>
@@ -409,10 +492,19 @@ export function ContentManager({
           {dialog.kind === 'subject' && (
             <>
               <DialogHeader>
-                <DialogTitle>New subject</DialogTitle>
-                <DialogDescription>Subjects hold the units and notes.</DialogDescription>
+                <DialogTitle>New {label} subject</DialogTitle>
+                <DialogDescription>
+                  Subjects hold the units and notes. Only {label} semesters are offered below —
+                  a subject takes its programme from the semester it is filed under.
+                </DialogDescription>
               </DialogHeader>
-              <ActionForm action={createSubjectAction} submitLabel="Create subject" onSuccess={close}>
+              <ActionForm
+                action={createSubjectAction}
+                submitLabel={`Create ${label} subject`}
+                onSuccess={close}
+              >
+                {/* Compared against the chosen semester's program server-side. */}
+                <input type="hidden" name="program" value={program} />
                 <Field label="Semester" htmlFor="subject-semester">
                   <Select
                     id="subject-semester"
@@ -422,7 +514,7 @@ export function ContentManager({
                   >
                     {catalog.map((semester) => (
                       <option key={semester.id} value={semester.id}>
-                        {semester.name}
+                        {stripProgramPrefix(semester.name, semester.program)}
                       </option>
                     ))}
                   </Select>
@@ -461,14 +553,15 @@ export function ContentManager({
           {dialog.kind === 'upload' && (
             <>
               <DialogHeader>
-                <DialogTitle>Upload a PDF</DialogTitle>
+                <DialogTitle>Upload a {label} PDF</DialogTitle>
                 <DialogDescription>
-                  Pick the unit it belongs to. The PDF goes into private storage — students only
-                  ever reach it through the in-app reader.
+                  Pick the unit it belongs to — only {label} units are listed. The PDF goes into
+                  private storage; students only ever reach it through the in-app reader.
                 </DialogDescription>
               </DialogHeader>
               <NoteUploadForm
                 placements={placements}
+                program={program}
                 maxMb={maxUploadMb}
                 currencySymbol={currencySymbol}
                 defaultSubjectId={dialog.subjectId}

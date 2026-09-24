@@ -9,6 +9,8 @@ import { storage } from '@/lib/storage/index';
 import { recordEvent } from '@/lib/analytics/events';
 import { writeAudit } from '@/lib/audit';
 import { firstError, noteMetadataSchema } from '@/lib/validation';
+import { subjectProgram } from '@/lib/admin/catalog';
+import { programLabel } from '@/lib/program';
 import type { ActionResult } from '@/app/admin/_actions/users';
 
 function value(form: FormData, key: string): string {
@@ -47,6 +49,33 @@ export async function updateNoteAction(noteId: string, form: FormData): Promise<
     });
     if (!parsed.success) throw Errors.validation(firstError(parsed.error));
     const meta = parsed.data;
+
+    /*
+     * CROSS-PROGRAM GUARD.
+     *
+     * The subject picker on this page lists every subject, because it has to be
+     * able to show the one this note is already in whichever catalogue that is.
+     * That makes moving a note across programs a single mis-click, and nothing
+     * downstream would notice: a note has no program of its own, so the PDF
+     * would simply start appearing on the other shelf.
+     *
+     * Moving content between programs is not something this screen is for, so
+     * a move that would change the note's program is refused outright rather
+     * than confirmed. Same-program moves — the ordinary case — are untouched,
+     * and a note whose subject is not changing never reaches this check.
+     */
+    if (meta.subjectId !== existing.subjectId) {
+      const [from, to] = await Promise.all([
+        subjectProgram(existing.subjectId),
+        subjectProgram(meta.subjectId),
+      ]);
+      if (!to) throw Errors.validation('That subject no longer exists.');
+      if (from && from !== to) {
+        throw Errors.validation(
+          `This note is in the ${programLabel(from)} catalogue and that subject is in ${programLabel(to)}. Notes cannot be moved between programmes here.`,
+        );
+      }
+    }
 
     if (meta.unitId) {
       const unit = await prisma.unit.findFirst({

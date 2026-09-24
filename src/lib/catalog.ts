@@ -1,6 +1,7 @@
 import 'server-only';
 import { prisma } from '@/lib/prisma';
 import { env } from '@/lib/env';
+import type { Program } from '@/lib/program';
 
 /**
  * The public catalogue.
@@ -9,6 +10,16 @@ import { env } from '@/lib/env';
  * structure. Only PUBLISHED notes appear; drafts and archived material are
  * invisible outside the admin area. Nothing here exposes storage keys, file
  * names or any other detail that could be used to reach content directly.
+ *
+ * ## Program is a view, not a gate
+ *
+ * `catalogOverview` and `catalogTotals` take a program and draw that shelf.
+ * That is *filtering*, in the same sense as `isArchived: false` — it decides
+ * what is listed, never what may be opened. Any student can call either
+ * function with either program, and `subjectCatalog` deliberately does not
+ * filter by program at all: a Polytechnic subject opens from a B.Tech shelf,
+ * from a pasted link, from anywhere. Access is `lib/access/entitlements.ts`'s
+ * business and it has never heard of this enum.
  */
 
 export interface CatalogNote {
@@ -50,10 +61,15 @@ export interface CatalogUnit {
 
 const PUBLISHED = { status: 'PUBLISHED' as const };
 
-/** Semesters with their subjects and note counts — the home page. */
-export async function catalogOverview() {
+/**
+ * Semesters with their subjects and note counts — one program's shelf.
+ *
+ * Served by `semesters(program, isArchived, position)`, which is this query
+ * read left to right.
+ */
+export async function catalogOverview(program: Program) {
   const semesters = await prisma.semester.findMany({
-    where: { isArchived: false },
+    where: { program, isArchived: false },
     orderBy: [{ position: 'asc' }, { name: 'asc' }],
     select: {
       id: true,
@@ -92,13 +108,14 @@ export async function catalogOverview() {
     .filter((semester) => semester.subjects.length > 0);
 }
 
-/** Totals for the home page header. */
-export async function catalogTotals() {
+/** Totals for the home page header, for the shelf being shown. */
+export async function catalogTotals(program: Program) {
+  const inProgram = { semester: { is: { program } } };
   const [notes, subjects, semesters] = await Promise.all([
-    prisma.note.count({ where: PUBLISHED }),
-    prisma.subject.count({ where: { isArchived: false, notes: { some: PUBLISHED } } }),
+    prisma.note.count({ where: { ...PUBLISHED, subject: { is: inProgram } } }),
+    prisma.subject.count({ where: { ...inProgram, isArchived: false, notes: { some: PUBLISHED } } }),
     prisma.semester.count({
-      where: { isArchived: false, subjects: { some: { notes: { some: PUBLISHED } } } },
+      where: { program, isArchived: false, subjects: { some: { notes: { some: PUBLISHED } } } },
     }),
   ]);
   return { notes, subjects, semesters };
@@ -111,6 +128,10 @@ export async function catalogTotals() {
  * unique index on `notes."unitId"`, so a unit cannot have a second note; the
  * take exists so that a database which somehow predates that constraint renders
  * a sane page instead of a duplicated one.
+ *
+ * NOT FILTERED BY PROGRAM, on purpose. A subject opens from whichever shelf the
+ * link came from. Its semester's program comes back with it only so the page
+ * can keep the shelf choice in step — see `ProgramMemory`.
  */
 export async function subjectCatalog(slug: string) {
   const subject = await prisma.subject.findFirst({
@@ -123,7 +144,7 @@ export async function subjectCatalog(slug: string) {
       description: true,
       coverStorageKey: true,
       coverUpdatedAt: true,
-      semester: { select: { id: true, name: true, slug: true } },
+      semester: { select: { id: true, name: true, slug: true, program: true } },
       pyqs: {
         // Latest year first: the paper a student wants is almost always the
         // most recent one.

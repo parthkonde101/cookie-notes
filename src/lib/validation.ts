@@ -180,6 +180,16 @@ export const semesterSchema = z.object({
   name: z.string().trim().min(2).max(80),
   description: z.string().trim().max(400).optional().or(z.literal('')),
   position: z.coerce.number().int().min(0).max(99).optional().default(0),
+  /*
+   * Which catalogue this semester joins.
+   *
+   * A semester is the only row that carries a program, so this is the one
+   * place the value is written rather than derived — everything below it
+   * inherits. Optional so an older client, or a call that predates the
+   * program axis, still creates a valid semester; the action falls back to
+   * B.Tech, which is what the column defaults to anyway.
+   */
+  program: z.enum(['BTECH', 'POLYTECHNIC']).optional(),
 });
 
 export const subjectSchema = z.object({

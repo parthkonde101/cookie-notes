@@ -35,6 +35,24 @@ enum Role {
   ADMIN
 }
 
+/// Which course of study a stretch of the catalogue belongs to.
+///
+/// PROGRAM IS A PROPERTY OF CONTENT, NOT OF A STUDENT.
+///
+/// It sits on `Semester` and on nothing else. A note's program is its
+/// subject's semester's program — always derived, never copied — so there is
+/// one column to be right about rather than a denormalised field per note and
+/// a repair script for the first time they drift.
+///
+/// Deliberately absent from `User`. Every student may read both programs; the
+/// selector at the top of the catalogue is a view preference kept in the
+/// browser, not an account attribute and not an authorisation input. Nothing
+/// in `entitlements.ts` knows this enum exists.
+enum Program {
+  BTECH
+  POLYTECHNIC
+}
+
 enum UserStatus {
   ACTIVE
   DISABLED
@@ -400,9 +418,23 @@ model Setting {
 // ---------------------------------------------------------------------------
 
 model Semester {
-  id          String   @id @default(cuid())
-  name        String
-  slug        String   @unique
+  id   String @id @default(cuid())
+  name String
+  slug String @unique
+
+  /// Which programme this semester belongs to.
+  ///
+  /// THE CATALOGUE'S ONLY PROGRAM AXIS. A subject inherits it from its
+  /// semester and a note from its subject, so "is this note B.Tech?" has
+  /// exactly one answer and no copy of it to fall out of step. It is not an
+  /// access-control input: every student can read every program.
+  ///
+  /// Everything that existed before this column was B.Tech, which is what the
+  /// default records. `slug` stays globally unique, so a B.Tech and a
+  /// Polytechnic "Semester 1" need distinct slugs — which is correct: they are
+  /// different pages.
+  program Program @default(BTECH)
+
   description String?
   position    Int      @default(0)
   isArchived  Boolean  @default(false)
@@ -412,6 +444,7 @@ model Semester {
   subjects Subject[]
 
   @@index([isArchived, position])
+  @@index([program, isArchived, position])
   @@map("semesters")
 }
 

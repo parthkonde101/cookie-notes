@@ -10,9 +10,16 @@ import { Alert } from '@/components/ui/feedback';
 import { Field } from '@/components/admin/action-form';
 import { formatBytes, cn } from '@/lib/utils';
 import type { PlacementOption } from '@/lib/admin/catalog';
+import { programLabel, type Program } from '@/lib/program';
 
 interface Props {
   placements: PlacementOption[];
+  /**
+   * The program being managed. Submitted with the upload so the server can
+   * check it against the program it derives from the chosen subject and refuse
+   * a mismatch — see `api/admin/notes/route.ts`.
+   */
+  program: Program;
   maxMb: number;
   currencySymbol: string;
   defaultSubjectId?: string;
@@ -35,6 +42,7 @@ interface Props {
  */
 export function NoteUploadForm({
   placements,
+  program,
   maxMb,
   currencySymbol,
   defaultSubjectId,
@@ -256,8 +264,19 @@ export function NoteUploadForm({
         </div>
       )}
 
+      {/*
+       * Which catalogue this PDF is being filed into. Submitted so the server
+       * can compare it with the program it looks up from the chosen subject;
+       * the server trusts its own lookup, not this field.
+       */}
+      <input type="hidden" name="program" value={program} />
+
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Subject" htmlFor="subjectId">
+        <Field
+          label="Subject"
+          htmlFor="subjectId"
+          hint={`${programLabel(program)} subjects only.`}
+        >
           <Select
             id="subjectId"
             name="subjectId"

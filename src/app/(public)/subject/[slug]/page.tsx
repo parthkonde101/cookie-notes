@@ -7,7 +7,9 @@ import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/feedback';
 import { NoteCard, type CardAccessState } from '@/components/catalog/note-card';
 import { UnitCard } from '@/components/catalog/unit-card';
+import { ProgramMemory } from '@/components/catalog/program-memory';
 import { subjectCatalog, subscribedUnitIds, type CatalogNote } from '@/lib/catalog';
+import { PROGRAM_PARAM, programLabel, stripProgramPrefix } from '@/lib/program';
 import { optionalUser } from '@/lib/auth/guards';
 import { resolveNoteAccessStates } from '@/lib/access/entitlements';
 import { recordEvent } from '@/lib/analytics/events';
@@ -98,12 +100,20 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
+      {/*
+       * Records which shelf this subject belongs to, so going back to the
+       * catalogue lands on the right one even when the page was reached from a
+       * shared link. Writes a cookie and renders nothing; it grants nothing and
+       * restricts nothing.
+       */}
+      <ProgramMemory program={subject.semester.program} />
+
       <Link
-        href="/"
+        href={`/?${PROGRAM_PARAM}=${subject.semester.program}`}
         className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
       >
         <ArrowLeft className="size-3.5" />
-        All notebooks
+        All {programLabel(subject.semester.program)} notebooks
       </Link>
 
       {/* Notebook header — the cover, then the identity. */}
@@ -135,8 +145,13 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
         </div>
 
         <div className="min-w-0 flex-1">
+          {/*
+           * "Semester 1", not "B.Tech Semester 1" — the back link directly
+           * above already names the programme, and saying it twice in adjacent
+           * lines is the repetition this page had.
+           */}
           <p className="text-xs font-medium uppercase tracking-wider text-primary">
-            {subject.semester.name}
+            {stripProgramPrefix(subject.semester.name, subject.semester.program)}
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <h1 className="text-pretty text-2xl font-semibold tracking-tight sm:text-3xl">
