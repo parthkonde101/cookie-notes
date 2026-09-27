@@ -81,6 +81,18 @@ const config: Config = {
           from: { opacity: '0', transform: 'translateY(4px)' },
           to: { opacity: '1', transform: 'translateY(0)' },
         },
+        /*
+         * The catalogue settling into place after a programme switch.
+         *
+         * Deliberately small: 6px of rise and nothing else. No scale, no blur,
+         * no bounce — those read as an entrance, and this is content arriving
+         * where it already belonged. Only `opacity` and `transform` change, so
+         * it runs on the compositor and never triggers layout.
+         */
+        'catalog-enter': {
+          from: { opacity: '0', transform: 'translateY(6px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
+        },
         shimmer: {
           '100%': { transform: 'translateX(100%)' },
         },
@@ -89,6 +101,9 @@ const config: Config = {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
         'fade-in': 'fade-in 0.25s ease-out both',
+        // 200ms, `both` so the element is already invisible before its stagger
+        // delay elapses rather than flashing at full opacity first.
+        'catalog-enter': 'catalog-enter 200ms cubic-bezier(0.16, 1, 0.3, 1) both',
       },
     },
   },

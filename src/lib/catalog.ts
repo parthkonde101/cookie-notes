@@ -108,7 +108,30 @@ export async function catalogOverview(program: Program) {
     .filter((semester) => semester.subjects.length > 0);
 }
 
-/** Totals for the home page header, for the shelf being shown. */
+/**
+ * How many published notes one programme holds.
+ *
+ * Split out of `catalogTotals` because the catalogue page needs this number
+ * and nothing else: it goes into the `CATALOG_VIEWED` analytics event and is
+ * never shown to a student. Asking for the full totals meant three COUNT
+ * queries where one would do — two of them computed, serialised and then
+ * discarded on every catalogue render and every programme switch.
+ *
+ * The value is identical to `catalogTotals(program).notes`; only the two
+ * unused counts are gone.
+ */
+export async function publishedNoteCount(program: Program): Promise<number> {
+  return prisma.note.count({
+    where: { ...PUBLISHED, subject: { is: { semester: { is: { program } } } } },
+  });
+}
+
+/**
+ * Totals for the shelf being shown.
+ *
+ * Kept for callers that genuinely need all three. The catalogue page does not —
+ * see `publishedNoteCount` above.
+ */
 export async function catalogTotals(program: Program) {
   const inProgram = { semester: { is: { program } } };
   const [notes, subjects, semesters] = await Promise.all([

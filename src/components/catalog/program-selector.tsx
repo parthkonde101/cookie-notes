@@ -9,6 +9,7 @@ import {
   PROGRAM_PARAM,
   type Program,
 } from '@/lib/program';
+import { useProgramTransition } from '@/components/catalog/program-transition';
 import { cn } from '@/lib/utils';
 
 /**
@@ -38,6 +39,17 @@ import { cn } from '@/lib/utils';
  * optimistically, and when the server tree arrives the prop confirms it. That
  * also means Back/Forward, a pasted link and a refresh all put the indicator in
  * the right place with no effect to synchronise.
+ *
+ * ## Two ways to be driven
+ *
+ * Inside a `ProgramTransitionProvider` — as the public catalogue is — the
+ * navigation and the pending flag are hoisted into that provider, so the shelf
+ * can dim the moment the button is pressed instead of waiting for the server.
+ *
+ * Without one — as on the admin Notes screen — the component falls back to the
+ * transition it owns internally and behaves exactly as it always did. Both
+ * hooks are called on every render either way, so the choice is a value
+ * selection, never a conditional hook.
  *
  * ## Access
  *
@@ -77,7 +89,8 @@ export function ProgramSelector({
 }: ProgramSelectorProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const [isPending, startTransition] = useTransition();
+  const [localIsPending, startTransition] = useTransition();
+  const hoisted = useProgramTransition();
 
   const listRef = useRef<HTMLDivElement>(null);
   const buttonRefs = useRef(new Map<Program, HTMLButtonElement>());
@@ -87,11 +100,16 @@ export function ProgramSelector({
   // press rather than when the server responds. Cleared the moment the prop
   // catches up, after which `active` is the only source of truth again.
   const [pending, setPending] = useState<Program | null>(null);
-  const shown = pending ?? active;
 
   useEffect(() => {
     if (pending === active) setPending(null);
   }, [pending, active]);
+
+  // A provider, when present, owns the optimistic choice and the pending flag
+  // so the shelf below can react to the same press. Falling back to the local
+  // pair keeps the admin screen working untouched.
+  const shown = hoisted ? hoisted.shown : (pending ?? active);
+  const isPending = hoisted ? hoisted.isPending : localIsPending;
 
   /**
    * Measures the active button and parks the indicator over it.
@@ -125,6 +143,12 @@ export function ProgramSelector({
 
   const select = useCallback(
     (program: Program) => {
+      // Hoisted: the provider does the identical work, and the shelf sees it.
+      if (hoisted) {
+        hoisted.select(program);
+        return;
+      }
+
       if (program === active && pending === null) return;
       setPending(program);
 
@@ -140,7 +164,7 @@ export function ProgramSelector({
         router.replace(`${pathname}?${params.toString()}`, { scroll: false });
       });
     },
-    [active, cookieName, pending, pathname, router],
+    [active, cookieName, hoisted, pending, pathname, router],
   );
 
   /** Left/Right walk the options, as a tablist is expected to. */
