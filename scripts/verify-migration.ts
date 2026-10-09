@@ -112,7 +112,7 @@ async function main() {
 
     // Propose, exactly as the route does.
     await prisma.user.update({ where: { id: user.id }, data: { pendingEmail: target } });
-    const { code } = await issueCode(user.id, null, PURPOSE);
+    const { code } = await issueCode({ userId: user.id, purpose: PURPOSE, address: target, ipAddress: null });
 
     const beforeOtp = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     check('6. the email is unchanged while a code is outstanding', beforeOtp.email === user.email);
@@ -120,14 +120,14 @@ async function main() {
     check('   with no verification timestamp yet', beforeOtp.emailVerifiedAt === null);
 
     // A wrong code.
-    const wrong = await verifyCode(user.id, code === '000000' ? '111111' : '000000', PURPOSE);
+    const wrong = await verifyCode({ userId: user.id, code: code === '000000' ? '111111' : '000000', purpose: PURPOSE, address: target });
     check('9. a wrong code is rejected', !wrong.ok);
     const afterWrong = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     check('   and the email is still the old one', afterWrong.email === user.email);
     check('   and the proposal survives for a retry', afterWrong.pendingEmail === target);
 
     // The right one.
-    const right = await verifyCode(user.id, code, PURPOSE);
+    const right = await verifyCode({ userId: user.id, code: code, purpose: PURPOSE, address: target });
     check('7. the correct code is accepted', right.ok);
     await prisma.user.update({
       where: { id: user.id },
@@ -147,21 +147,21 @@ async function main() {
     const user = await make('migtest+expire@gmail.com');
     const target = 'migtest+expire-new@mitwpu.edu.in';
     await prisma.user.update({ where: { id: user.id }, data: { pendingEmail: target } });
-    const { code } = await issueCode(user.id, null, PURPOSE);
+    const { code } = await issueCode({ userId: user.id, purpose: PURPOSE, address: target, ipAddress: null });
     await prisma.emailVerificationToken.updateMany({
       where: { userId: user.id, consumedAt: null },
       data: { expiresAt: new Date(Date.now() - 1000) },
     });
 
-    const outcome = await verifyCode(user.id, code, PURPOSE);
+    const outcome = await verifyCode({ userId: user.id, code: code, purpose: PURPOSE, address: target });
     check('10. an expired code is rejected', !outcome.ok && outcome.reason === 'expired');
     const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     check('    the email is unchanged', after.email === user.email);
     check('    and still unverified', after.emailVerifiedAt === null);
 
     // 13. Retry after failure.
-    const retry = await issueCode(user.id, null, PURPOSE);
-    const ok = await verifyCode(user.id, retry.code, PURPOSE);
+    const retry = await issueCode({ userId: user.id, purpose: PURPOSE, address: target, ipAddress: null });
+    const ok = await verifyCode({ userId: user.id, code: retry.code, purpose: PURPOSE, address: target });
     check('13. the student can request a new code and succeed', ok.ok);
   }
 
@@ -233,8 +233,8 @@ async function main() {
 
     const target = 'migtest+preserved@mitwpu.edu.in';
     await prisma.user.update({ where: { id: user.id }, data: { pendingEmail: target } });
-    const { code } = await issueCode(user.id, null, PURPOSE);
-    await verifyCode(user.id, code, PURPOSE);
+    const { code } = await issueCode({ userId: user.id, purpose: PURPOSE, address: target, ipAddress: null });
+    await verifyCode({ userId: user.id, code: code, purpose: PURPOSE, address: target });
     await prisma.user.update({
       where: { id: user.id },
       data: { email: target, emailVerifiedAt: new Date(), pendingEmail: null },
@@ -361,27 +361,28 @@ async function main() {
   section('Brute force on a migration code');
   {
     const user = await make('migtest+brute@gmail.com');
+    const target = 'migtest+brute-new@mitwpu.edu.in';
     await prisma.user.update({
       where: { id: user.id },
-      data: { pendingEmail: 'migtest+brute-new@mitwpu.edu.in' },
+      data: { pendingEmail: target },
     });
-    const { code } = await issueCode(user.id, null, PURPOSE);
+    const { code } = await issueCode({ userId: user.id, purpose: PURPOSE, address: target, ipAddress: null });
     const wrong = code === '000000' ? '111111' : '000000';
 
     let last = '';
     for (let i = 0; i < OTP_MAX_ATTEMPTS; i += 1) {
-      const outcome = await verifyCode(user.id, wrong, PURPOSE);
+      const outcome = await verifyCode({ userId: user.id, code: wrong, purpose: PURPOSE, address: target });
       last = outcome.ok ? 'ok' : outcome.reason;
     }
     check(`the code locks after ${OTP_MAX_ATTEMPTS} wrong guesses`, last === 'too_many_attempts', last);
-    const afterLock = await verifyCode(user.id, code, PURPOSE);
+    const afterLock = await verifyCode({ userId: user.id, code: code, purpose: PURPOSE, address: target });
     check('and the real code stops working once locked', !afterLock.ok);
     const row = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     check('the email is still the original one', row.email === user.email);
 
     // A sign-up code cannot be spent on a migration, or the reverse.
-    const signup = await issueCode(user.id, null);
-    const crossed = await verifyCode(user.id, signup.code, PURPOSE);
+    const signup = await issueCode({ userId: user.id, purpose: 'email_verification', address: user.email, ipAddress: null });
+    const crossed = await verifyCode({ userId: user.id, code: signup.code, purpose: PURPOSE, address: target });
     check('a sign-up code cannot be used to change an email', !crossed.ok);
   }
 

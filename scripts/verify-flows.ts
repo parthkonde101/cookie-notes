@@ -368,7 +368,12 @@ async function main() {
     });
     check('a wrong code is rejected', wrongCode.status === 422);
 
-    const { code } = await issueCode(created!.id, null);
+    const { code } = await issueCode({
+      userId: created!.id,
+      purpose: 'email_verification',
+      address: STUDENT_EMAIL,
+      ipAddress: null,
+    });
     const verified = await studentA.json('/api/auth/verify-email', { email: STUDENT_EMAIL, code });
     check('the right code verifies the address', verified.status === 200, `status ${verified.status}`);
     check('verification does NOT sign anybody in either', !studentA.hasSession());
@@ -1466,7 +1471,12 @@ async function main() {
     // The code only ever exists in the email, so the test mints one through the
     // same helper the route uses — which supersedes whatever was sent.
     const { issueCode } = await import('../src/lib/auth/otp');
-    const { code } = await issueCode(legacyUser.id, null, 'email_change');
+    const { code } = await issueCode({
+      userId: legacyUser.id,
+      purpose: 'email_change',
+      address: collegeEmail,
+      ipAddress: null,
+    });
 
     const crossPurpose = await legacy.json('/api/auth/verify-email', {
       email: collegeEmail,

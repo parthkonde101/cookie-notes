@@ -1,22 +1,19 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { prisma } from '@/lib/prisma';
-import { env } from '@/lib/env';
 import { Errors, toErrorResponse } from '@/lib/errors';
 import { contextFromHeaders } from '@/lib/request';
 import { requireApiUser } from '@/lib/auth/guards';
 import { canVerifyCurrentEmail } from '@/lib/auth/current-email';
 import {
-  issueCode,
-  lastIssuedAt,
   OTP_MAX_ATTEMPTS,
   OTP_PURPOSE,
   OTP_RESEND_COOLDOWN_SECONDS,
   OTP_TTL_MINUTES,
   verifyCode,
 } from '@/lib/auth/otp';
-import { rateLimit } from '@/lib/auth/rate-limit';
+import { issueAndSendCode } from '@/lib/auth/send-code';
+import { assertWithinLimits, rateLimit } from '@/lib/auth/rate-limit';
 import { recordEvent } from '@/lib/analytics/events';
-import { sendMail, verificationCodeEmail } from '@/lib/mail';
+import { verificationCodeEmail } from '@/lib/mail';
 import { confirmEmailChangeSchema, firstError } from '@/lib/validation';
 
 export const runtime = 'nodejs';
@@ -51,6 +48,9 @@ export const dynamic = 'force-dynamic';
 
 const PURPOSE = OTP_PURPOSE.currentEmail;
 
+/** Thrown inside the claim transaction to roll it back when the account can no longer be marked. */
+class NotMarkable extends Error {}
+
 /** Send a code to the address on the account. No request body is read. */
 export async function POST(request: NextRequest) {
   try {
@@ -67,39 +67,44 @@ export async function POST(request: NextRequest) {
     }
 
     // Keyed to the account, so one session cannot be used to bomb a mailbox.
-    const perUser = await rateLimit(`currentemail:user:${user.id}`, 5, 60);
-    const perIp = await rateLimit(`currentemail:ip:${ctx.ip ?? 'unknown'}`, 15, 60);
-    if (!perUser.allowed || !perIp.allowed) {
-      throw Errors.rateLimited('Too many attempts. Please wait a few minutes and try again.');
-    }
+    // Fails closed: if the limiter cannot run, that is not permission to send.
+    const perUser = await rateLimit(`currentemail:user:${user.id}`, 5, 60, { failClosed: true });
+    const perIp = await rateLimit(`currentemail:ip:${ctx.ip ?? 'unknown'}`, 15, 60, { failClosed: true });
+    assertWithinLimits(perUser, perIp);
 
-    // A short cooldown on top of the hourly limit, so the button cannot be held
-    // down to generate a stream of emails.
-    const issued = await lastIssuedAt(user.id, PURPOSE);
-    if (issued && Date.now() - issued.getTime() < OTP_RESEND_COOLDOWN_SECONDS * 1000) {
-      return NextResponse.json({
-        ok: true,
-        cooldownSeconds: OTP_RESEND_COOLDOWN_SECONDS,
-        expiresInMinutes: OTP_TTL_MINUTES,
-      });
-    }
-
-    const { code } = await issueCode(user.id, ctx.ip, PURPOSE);
-
-    const result = await sendMail({
-      ...verificationCodeEmail(user.name, code, OTP_TTL_MINUTES),
-      subject: 'Verify your MIT-WPU email for Cookie Notes',
-      to: user.email,
+    // The code is bound to this account's own address and nothing else, and it is
+    // issued under the lock that serialises issuing for this account — so a held
+    // down button, or a burst of requests, leaves exactly one code in force.
+    const sent = await issueAndSendCode({
+      userId: user.id,
+      purpose: PURPOSE,
+      address: user.email,
+      ipAddress: ctx.ip,
+      // Checked inside that lock, and measured against the most recent code
+      // whether or not it is still live.
+      cooldownSeconds: OTP_RESEND_COOLDOWN_SECONDS,
+      label: 'verify-current-email',
+      message: (code) => ({
+        ...verificationCodeEmail(user.name, code, OTP_TTL_MINUTES),
+        subject: 'Verify your MIT-WPU email for Cookie Notes',
+        to: user.email,
+      }),
     });
 
-    if (!result.delivered) {
-      // Never claim a code was sent when it was not. A driver asked to send real
-      // mail and failing is an error; the explicit console driver is a
-      // development choice that prints to the terminal.
-      console.error(`[verify-current-email] code was logged, not emailed (driver=${result.driver})`);
-      if (env.mail.driver === 'resend') {
-        throw Errors.internal('We could not send the verification email. Please try again shortly.');
+    if (sent.status === 'cooldown') {
+      // A code that is still usable was sent a moment ago: say so. Otherwise the
+      // last one was locked out or could not be delivered, and a retry must not
+      // read as though an email is on its way.
+      if (sent.live) {
+        return NextResponse.json({
+          ok: true,
+          cooldownSeconds: OTP_RESEND_COOLDOWN_SECONDS,
+          expiresInMinutes: OTP_TTL_MINUTES,
+        });
       }
+      throw Errors.rateLimited(
+        `Please wait ${sent.retryAfterSeconds} seconds before requesting another code.`,
+      );
     }
 
     await recordEvent({
@@ -130,11 +135,9 @@ export async function PUT(request: NextRequest) {
     if (!parsed.success) throw Errors.validation(firstError(parsed.error));
     const { code } = parsed.data;
 
-    const perUser = await rateLimit(`currentemailconfirm:user:${user.id}`, 10, 10);
-    const perIp = await rateLimit(`currentemailconfirm:ip:${ctx.ip ?? 'unknown'}`, 30, 60);
-    if (!perUser.allowed || !perIp.allowed) {
-      throw Errors.rateLimited('Too many attempts. Please wait a few minutes and try again.');
-    }
+    const perUser = await rateLimit(`currentemailconfirm:user:${user.id}`, 10, 10, { failClosed: true });
+    const perIp = await rateLimit(`currentemailconfirm:ip:${ctx.ip ?? 'unknown'}`, 30, 60, { failClosed: true });
+    assertWithinLimits(perUser, perIp);
 
     // Already done: idempotent rather than an error, so a double-submitted form
     // does not look like a failure.
@@ -147,7 +150,33 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const outcome = await verifyCode(user.id, code, PURPOSE);
+    // Spending the code and marking the account are ONE transaction. If the mark
+    // cannot be made — the database fails, or the account's address has moved
+    // since this request began — the code is not spent, so the student is never
+    // left with a burned code and an unverified account.
+    //
+    // The mark is only ever made against the address the code was bound to.
+    let outcome;
+    try {
+      outcome = await verifyCode({
+        userId: user.id,
+        code,
+        purpose: PURPOSE,
+        address: user.email,
+        onClaim: async (tx) => {
+          const marked = await tx.user.updateMany({
+            where: { id: user.id, email: user.email, emailVerifiedAt: null },
+            data: { emailVerifiedAt: new Date() },
+          });
+          if (marked.count !== 1) throw new NotMarkable();
+        },
+      });
+    } catch (error) {
+      if (error instanceof NotMarkable) {
+        throw Errors.validation('That code is not valid or has expired. Request a new one.');
+      }
+      throw error;
+    }
 
     if (!outcome.ok) {
       await recordEvent({
@@ -162,17 +191,6 @@ export async function PUT(request: NextRequest) {
           `That code has been locked after ${OTP_MAX_ATTEMPTS} incorrect attempts. Request a new one.`,
         );
       }
-      throw Errors.validation('That code is not valid or has expired. Request a new one.');
-    }
-
-    // The code is spent (consumed by one request only, by the database). Now
-    // record the proof — but only against the address it was sent to: if the
-    // account's address has moved since this request began, nothing is marked.
-    const marked = await prisma.user.updateMany({
-      where: { id: user.id, email: user.email, emailVerifiedAt: null },
-      data: { emailVerifiedAt: new Date() },
-    });
-    if (marked.count !== 1) {
       throw Errors.validation('That code is not valid or has expired. Request a new one.');
     }
 

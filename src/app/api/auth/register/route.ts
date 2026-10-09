@@ -4,8 +4,9 @@ import { env } from '@/lib/env';
 import { Errors, toErrorResponse } from '@/lib/errors';
 import { contextFromHeaders } from '@/lib/request';
 import { checkPasswordStrength, hashPassword } from '@/lib/auth/password';
-import { issueCode, OTP_TTL_MINUTES } from '@/lib/auth/otp';
-import { rateLimit } from '@/lib/auth/rate-limit';
+import { OTP_PURPOSE, OTP_TTL_MINUTES } from '@/lib/auth/otp';
+import { issueAndSendCode } from '@/lib/auth/send-code';
+import { assertWithinLimits, rateLimit } from '@/lib/auth/rate-limit';
 import { recordEvent } from '@/lib/analytics/events';
 import { sendMail, verificationCodeEmail } from '@/lib/mail';
 import { firstError, registerSchema } from '@/lib/validation';
@@ -37,11 +38,15 @@ export async function POST(request: NextRequest) {
   try {
     const ctx = contextFromHeaders(request.headers);
 
+    // Everything here that sends mail fails CLOSED: if the limiter cannot run,
+    // that is not permission to send.
     const limit = await rateLimit(
       `register:${ctx.ip ?? 'unknown'}`,
       env.rateLimit.registerMaxPerHour,
       60,
+      { failClosed: true },
     );
+    assertWithinLimits(...(limit.unavailable ? [limit] : []));
     if (!limit.allowed) {
       throw Errors.rateLimited('Too many sign-up attempts from this network. Try again later.');
     }
@@ -57,7 +62,8 @@ export async function POST(request: NextRequest) {
 
     // Per-address limit as well as per-network, so one mailbox cannot be
     // flooded from a rotating set of IPs.
-    const perEmail = await rateLimit(`register:email:${email}`, 5, 60);
+    const perEmail = await rateLimit(`register:email:${email}`, 5, 60, { failClosed: true });
+    assertWithinLimits(...(perEmail.unavailable ? [perEmail] : []));
     if (!perEmail.allowed) {
       // Same shape as success: a rate-limit message keyed to an address would
       // itself reveal that the address is interesting.
@@ -149,33 +155,17 @@ export async function POST(request: NextRequest) {
 
     // Issuing supersedes any earlier code for this user, so pressing the button
     // twice leaves exactly one code live.
-    const { code } = await issueCode(userId, ctx.ip);
-
-    const result = await sendMail({
-      ...verificationCodeEmail(displayName, code, OTP_TTL_MINUTES),
-      to: email,
+    await issueAndSendCode({
+      userId,
+      purpose: OTP_PURPOSE.signUp,
+      // The address the code is mailed to is the one it is bound to, so it can
+      // only ever verify this account's own address.
+      address: email,
+      ipAddress: ctx.ip,
+      label: 'register',
+      failureMessage: 'We could not send your verification email. Please try again shortly.',
+      message: (code) => ({ ...verificationCodeEmail(displayName, code, OTP_TTL_MINUTES), to: email }),
     });
-
-    if (!result.delivered) {
-      // The code went to the server log rather than an inbox.
-      //
-      // Which of those two situations this is matters. Asking for real mail and
-      // not getting it is an accident — a missing key — and it mints accounts
-      // nobody can ever sign in to, so it fails loudly. Explicitly choosing
-      // MAIL_DRIVER=console is a deliberate choice that prints the code to the
-      // terminal, which is how local development and the flow tests work; that
-      // is allowed to proceed, and `productionConfigWarnings` already shouts at
-      // boot if someone has left it that way in production.
-      const misconfigured = env.mail.driver === 'resend';
-      console.error(
-        `[register] verification code was logged, not emailed (driver=${result.driver})`,
-      );
-      if (misconfigured) {
-        throw Errors.internal(
-          'We could not send your verification email. Please try again shortly.',
-        );
-      }
-    }
 
     await recordEvent({ type: 'EMAIL_VERIFICATION_SENT', userId, ctx });
 

@@ -5,14 +5,14 @@ import { Errors, toErrorResponse } from '@/lib/errors';
 import { contextFromHeaders } from '@/lib/request';
 import { requireApiUser } from '@/lib/auth/guards';
 import {
-  issueCode,
-  lastIssuedAt,
   OTP_MAX_ATTEMPTS,
+  OTP_PURPOSE,
   OTP_RESEND_COOLDOWN_SECONDS,
   OTP_TTL_MINUTES,
   verifyCode,
 } from '@/lib/auth/otp';
-import { rateLimit } from '@/lib/auth/rate-limit';
+import { issueAndSendCode } from '@/lib/auth/send-code';
+import { assertWithinLimits, rateLimit } from '@/lib/auth/rate-limit';
 import { recordEvent } from '@/lib/analytics/events';
 import { sendMail, verificationCodeEmail } from '@/lib/mail';
 import {
@@ -54,7 +54,10 @@ export const dynamic = 'force-dynamic';
  * be spent on each other.
  */
 
-const PURPOSE = 'email_change';
+const PURPOSE = OTP_PURPOSE.emailChange;
+
+/** Thrown inside the claim transaction to roll it back when the address cannot be adopted. */
+class AddressUnavailable extends Error {}
 
 /** Propose a college address and send a code to it. */
 export async function POST(request: NextRequest) {
@@ -68,12 +71,11 @@ export async function POST(request: NextRequest) {
     const { email } = parsed.data;
 
     // Keyed to the account, not the address, so nobody can use this endpoint to
-    // spray codes at many mailboxes from one session.
-    const perUser = await rateLimit(`emailchange:user:${user.id}`, 5, 60);
-    const perIp = await rateLimit(`emailchange:ip:${ctx.ip ?? 'unknown'}`, 15, 60);
-    if (!perUser.allowed || !perIp.allowed) {
-      throw Errors.rateLimited('Too many attempts. Please wait a few minutes and try again.');
-    }
+    // spray codes at many mailboxes from one session. Fails closed: if the
+    // limiter cannot run, that is not permission to send.
+    const perUser = await rateLimit(`emailchange:user:${user.id}`, 5, 60, { failClosed: true });
+    const perIp = await rateLimit(`emailchange:ip:${ctx.ip ?? 'unknown'}`, 15, 60, { failClosed: true });
+    assertWithinLimits(perUser, perIp);
 
     if (email === user.email) {
       // A student already on a college address is not stuck: they can verify it
@@ -101,39 +103,50 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // A short cooldown so the button cannot be held down to bomb a mailbox.
-    const issued = await lastIssuedAt(user.id, PURPOSE);
-    if (issued && Date.now() - issued.getTime() < OTP_RESEND_COOLDOWN_SECONDS * 1000) {
-      return NextResponse.json({
-        ok: true,
-        pendingEmail: email,
-        cooldownSeconds: OTP_RESEND_COOLDOWN_SECONDS,
-        expiresInMinutes: OTP_TTL_MINUTES,
-      });
-    }
-
-    // Recorded as *proposed*, not adopted. `email` is untouched, so the student
-    // can still sign in with their original address the whole time.
-    await prisma.user.update({ where: { id: user.id }, data: { pendingEmail: email } });
-
-    const { code } = await issueCode(user.id, ctx.ip, PURPOSE);
-
-    const result = await sendMail({
-      ...verificationCodeEmail(user.name, code, OTP_TTL_MINUTES),
-      subject: 'Verify your MIT-WPU email for Cookie Notes',
-      to: email,
+    // The proposal and the code that proves it are recorded in ONE transaction,
+    // under the lock that serialises issuing for this account — and the code is
+    // bound to this exact address. So whatever order simultaneous requests run
+    // in, the address on file and the code in force always agree, and a code that
+    // was sent to one address can never promote another.
+    //
+    // `email` is untouched, so the student can still sign in with their original
+    // address the whole time.
+    const sent = await issueAndSendCode({
+      userId: user.id,
+      purpose: PURPOSE,
+      address: email,
+      ipAddress: ctx.ip,
+      cooldownSeconds: OTP_RESEND_COOLDOWN_SECONDS,
+      inTransaction: async (tx) => {
+        await tx.user.update({ where: { id: user.id }, data: { pendingEmail: email } });
+      },
+      label: 'college-email',
+      message: (code) => ({
+        ...verificationCodeEmail(user.name, code, OTP_TTL_MINUTES),
+        subject: 'Verify your MIT-WPU email for Cookie Notes',
+        to: email,
+      }),
     });
 
-    if (!result.delivered) {
-      // Never claim a code was sent when it was not. Same rule as sign-up:
-      // a driver asked to send real mail and failing is an error; an explicit
-      // console driver is a development choice that prints to the terminal.
-      console.error(`[college-email] code was logged, not emailed (driver=${result.driver})`);
-      if (env.mail.driver === 'resend') {
-        throw Errors.internal(
-          'We could not send the verification email. Please try again shortly.',
-        );
+    if (sent.status === 'cooldown') {
+      // Only claim a code was sent when one was — and sent to THIS address.
+      const proposed = await prisma.user.findUnique({
+        where: { id: user.id },
+        select: { pendingEmail: true },
+      });
+      if (sent.live && proposed?.pendingEmail === email) {
+        return NextResponse.json({
+          ok: true,
+          pendingEmail: email,
+          cooldownSeconds: OTP_RESEND_COOLDOWN_SECONDS,
+          expiresInMinutes: OTP_TTL_MINUTES,
+        });
       }
+      throw Errors.rateLimited(
+        sent.live
+          ? `A code was just sent to a different address. Please wait ${sent.retryAfterSeconds} seconds before changing it.`
+          : `Please wait ${sent.retryAfterSeconds} seconds before requesting another code.`,
+      );
     }
 
     await recordEvent({
@@ -171,11 +184,9 @@ export async function PUT(request: NextRequest) {
     if (!parsed.success) throw Errors.validation(firstError(parsed.error));
     const { code } = parsed.data;
 
-    const perUser = await rateLimit(`emailconfirm:user:${user.id}`, 10, 10);
-    const perIp = await rateLimit(`emailconfirm:ip:${ctx.ip ?? 'unknown'}`, 30, 60);
-    if (!perUser.allowed || !perIp.allowed) {
-      throw Errors.rateLimited('Too many attempts. Please wait a few minutes and try again.');
-    }
+    const perUser = await rateLimit(`emailconfirm:user:${user.id}`, 10, 10, { failClosed: true });
+    const perIp = await rateLimit(`emailconfirm:ip:${ctx.ip ?? 'unknown'}`, 30, 60, { failClosed: true });
+    assertWithinLimits(perUser, perIp);
 
     const current = await prisma.user.findUniqueOrThrow({
       where: { id: user.id },
@@ -190,8 +201,53 @@ export async function PUT(request: NextRequest) {
     if (!current.pendingEmail) {
       throw Errors.validation('Enter your MIT-WPU email address first.');
     }
+    const proposed = current.pendingEmail;
+    const previousEmail = user.email;
 
-    const outcome = await verifyCode(user.id, code, PURPOSE);
+    // The code is checked against the address it must have been sent to: the one
+    // now on file as the proposal. A code mailed anywhere else does not match.
+    //
+    // Spending the code and moving the address are one transaction: if the move
+    // cannot be made, the code is not spent, and if it is made, the code is.
+    let outcome;
+    try {
+      outcome = await verifyCode({
+        userId: user.id,
+        code,
+        purpose: PURPOSE,
+        address: proposed,
+        onClaim: async (tx) => {
+          // Re-check ownership at the moment of promotion. Between proposing and
+          // proving, somebody else may have taken the address; the unique index
+          // would catch it, but a clear message beats a constraint error.
+          const owner = await tx.user.findUnique({ where: { email: proposed }, select: { id: true } });
+          if (owner && owner.id !== user.id) throw new AddressUnavailable();
+
+          // Only while the account still holds this proposal and is unverified.
+          const moved = await tx.user.updateMany({
+            where: { id: user.id, pendingEmail: proposed, emailVerifiedAt: null },
+            data: { email: proposed, emailVerifiedAt: new Date(), pendingEmail: null },
+          });
+          if (moved.count !== 1) throw new AddressUnavailable();
+        },
+      });
+    } catch (error) {
+      // The address was taken, or a racing promotion got there first (the unique
+      // index). Nothing moved and the code was not spent; drop the proposal so
+      // the student chooses another.
+      const racing =
+        typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
+      if (error instanceof AddressUnavailable || racing) {
+        await prisma.user.updateMany({
+          where: { id: user.id, pendingEmail: proposed },
+          data: { pendingEmail: null },
+        });
+        throw Errors.validation(
+          'That address cannot be used for this account. Try another MIT-WPU address, or contact support.',
+        );
+      }
+      throw error;
+    }
 
     if (!outcome.ok) {
       await recordEvent({
@@ -208,42 +264,6 @@ export async function PUT(request: NextRequest) {
       }
       // The proposed address stays put so a retry does not start from scratch.
       throw Errors.validation('That code is not valid or has expired. Request a new one.');
-    }
-
-    // Re-check ownership at the moment of promotion. Between proposing and
-    // proving, somebody else may have taken the address; the unique index would
-    // catch it, but a clear message beats a constraint error.
-    const owner = await prisma.user.findUnique({
-      where: { email: current.pendingEmail },
-      select: { id: true },
-    });
-    if (owner && owner.id !== user.id) {
-      await prisma.user.update({ where: { id: user.id }, data: { pendingEmail: null } });
-      throw Errors.validation(
-        'That address cannot be used for this account. Try another MIT-WPU address, or contact support.',
-      );
-    }
-
-    const previousEmail = user.email;
-
-    try {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          email: current.pendingEmail,
-          emailVerifiedAt: new Date(),
-          pendingEmail: null,
-        },
-      });
-    } catch (error) {
-      // A racing promotion of the same address. Leave the account as it was.
-      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002') {
-        await prisma.user.update({ where: { id: user.id }, data: { pendingEmail: null } });
-        throw Errors.validation(
-          'That address cannot be used for this account. Try another MIT-WPU address, or contact support.',
-        );
-      }
-      throw error;
     }
 
     await recordEvent({
@@ -279,7 +299,7 @@ export async function PUT(request: NextRequest) {
     // The session continues. It is keyed to a session token, not to an email,
     // so nothing about it is stale — and signing the student out here would
     // mean punishing them for doing what we asked.
-    return NextResponse.json({ ok: true, verified: true, email: current.pendingEmail });
+    return NextResponse.json({ ok: true, verified: true, email: proposed });
   } catch (error) {
     return toErrorResponse(error);
   }

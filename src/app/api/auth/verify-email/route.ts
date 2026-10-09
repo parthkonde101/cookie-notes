@@ -1,19 +1,18 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { env } from '@/lib/env';
 import { Errors, toErrorResponse } from '@/lib/errors';
 import { contextFromHeaders } from '@/lib/request';
 import {
-  issueCode,
-  lastIssuedAt,
   OTP_MAX_ATTEMPTS,
+  OTP_PURPOSE,
   OTP_RESEND_COOLDOWN_SECONDS,
   OTP_TTL_MINUTES,
   verifyCode,
 } from '@/lib/auth/otp';
-import { rateLimit } from '@/lib/auth/rate-limit';
+import { issueAndSendCode } from '@/lib/auth/send-code';
+import { assertWithinLimits, rateLimit } from '@/lib/auth/rate-limit';
 import { recordEvent } from '@/lib/analytics/events';
-import { sendMail, verificationCodeEmail } from '@/lib/mail';
+import { verificationCodeEmail } from '@/lib/mail';
 import { firstError, resendCodeSchema, verifyEmailSchema } from '@/lib/validation';
 
 export const runtime = 'nodejs';
@@ -42,11 +41,9 @@ export async function POST(request: NextRequest) {
 
     // Two limiters: the per-address one bounds guessing at a specific account,
     // the per-network one bounds sweeping across many.
-    const perEmail = await rateLimit(`verify:email:${email}`, 5, 10);
-    const perIp = await rateLimit(`verify:ip:${ctx.ip ?? 'unknown'}`, 20, 60);
-    if (!perEmail.allowed || !perIp.allowed) {
-      throw Errors.rateLimited('Too many attempts. Please wait a few minutes and try again.');
-    }
+    const perEmail = await rateLimit(`verify:email:${email}`, 5, 10, { failClosed: true });
+    const perIp = await rateLimit(`verify:ip:${ctx.ip ?? 'unknown'}`, 20, 60, { failClosed: true });
+    assertWithinLimits(perEmail, perIp);
 
     const user = await prisma.user.findUnique({
       where: { email },
@@ -67,7 +64,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, verified: true, alreadyVerified: true });
     }
 
-    const outcome = await verifyCode(user.id, code);
+    const outcome = await verifyCode({
+      userId: user.id,
+      code,
+      purpose: OTP_PURPOSE.signUp,
+      // The address the code was mailed to: the one being verified.
+      address: email,
+    });
 
     if (!outcome.ok) {
       await recordEvent({
@@ -117,8 +120,10 @@ export async function PUT(request: NextRequest) {
     if (!parsed.success) throw Errors.validation(firstError(parsed.error));
     const { email } = parsed.data;
 
-    const perIp = await rateLimit(`resend:ip:${ctx.ip ?? 'unknown'}`, 10, 60);
-    const perEmail = await rateLimit(`resend:email:${email}`, 3, 60);
+    const perIp = await rateLimit(`resend:ip:${ctx.ip ?? 'unknown'}`, 10, 60, { failClosed: true });
+    const perEmail = await rateLimit(`resend:email:${email}`, 3, 60, { failClosed: true });
+    // A limiter that could not run is an outage, not a quota — say so.
+    if (perIp.unavailable || perEmail.unavailable) assertWithinLimits(perIp, perEmail);
     if (!perIp.allowed || !perEmail.allowed) {
       // Same body as success — a different answer here would be an oracle.
       return sentResponse();
@@ -133,29 +138,22 @@ export async function PUT(request: NextRequest) {
       return sentResponse();
     }
 
-    // A short cooldown on top of the hourly limit, so the button cannot be
-    // held down to generate a stream of emails.
-    const issued = await lastIssuedAt(user.id);
-    if (issued && Date.now() - issued.getTime() < OTP_RESEND_COOLDOWN_SECONDS * 1000) {
-      return sentResponse();
-    }
-
-    const { code } = await issueCode(user.id, ctx.ip);
-    const result = await sendMail({
-      ...verificationCodeEmail(user.name, code, OTP_TTL_MINUTES),
-      to: email,
+    // A short cooldown on top of the hourly limit, so the button cannot be held
+    // down to generate a stream of emails. It is checked inside the lock that
+    // serialises issuing, so simultaneous requests cannot all get past it.
+    const sent = await issueAndSendCode({
+      userId: user.id,
+      purpose: OTP_PURPOSE.signUp,
+      address: email,
+      ipAddress: ctx.ip,
+      cooldownSeconds: OTP_RESEND_COOLDOWN_SECONDS,
+      label: 'verify-email',
+      failureMessage: 'We could not send your verification email. Please try again shortly.',
+      message: (code) => ({ ...verificationCodeEmail(user.name, code, OTP_TTL_MINUTES), to: email }),
     });
-
-    if (!result.delivered) {
-      // Same rule as registration: a driver that was asked to send real mail
-      // and did not is an error; an explicit console driver is a choice.
-      console.error(`[verify-email] code was logged, not emailed (driver=${result.driver})`);
-      if (env.mail.driver === 'resend') {
-        throw Errors.internal(
-          'We could not send your verification email. Please try again shortly.',
-        );
-      }
-    }
+    // The same answer whether or not a code was sent — the wording is
+    // conditional on purpose, so this stays safe against account probing.
+    if (sent.status === 'cooldown') return sentResponse();
 
     await recordEvent({ type: 'EMAIL_VERIFICATION_SENT', userId: user.id, ctx, metadata: { resend: true } });
     return sentResponse();

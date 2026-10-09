@@ -74,6 +74,7 @@ async function main() {
   const { generateCode, hashCode, issueCode, verifyCode, OTP_MAX_ATTEMPTS } = await import(
     '../src/lib/auth/otp'
   );
+  const SIGNUP = 'email_verification';
   const { env } = await import('../src/lib/env');
 
   const password = await bcrypt.hash('Auth-Verify-2026!', 10);
@@ -177,24 +178,29 @@ async function main() {
     check('codes are 6 digits', [...codes].every((c) => /^\d{6}$/.test(c)));
     check('codes are not obviously repeating', codes.size > 150, `${codes.size} distinct of 200`);
 
-    const { code } = await issueCode(user.id, null);
+    const { code } = await issueCode({ userId: user.id, purpose: SIGNUP, address: user.email, ipAddress: null });
     const stored = await prisma.emailVerificationToken.findFirstOrThrow({
       where: { userId: user.id, consumedAt: null },
     });
     check('the plaintext code is never stored', stored.codeHash !== code);
-    check('what is stored is its SHA-256', stored.codeHash === hashCode(code));
+    const { createHash } = await import('node:crypto');
+    check(
+      'what is stored is a keyed HMAC bound to the account, purpose and address',
+      stored.codeHash === hashCode(code, { userId: user.id, purpose: SIGNUP, address: user.email }),
+    );
+    check('and not the bare SHA-256 of the code', stored.codeHash !== createHash('sha256').update(code).digest('hex'));
 
-    const wrong = await verifyCode(user.id, code === '000000' ? '111111' : '000000');
+    const wrong = await verifyCode({ userId: user.id, code: code === '000000' ? '111111' : '000000', purpose: SIGNUP, address: user.email });
     check('a wrong code is rejected', !wrong.ok && wrong.reason === 'mismatch');
     check(
       'and the attempt is counted',
       (await prisma.emailVerificationToken.findUniqueOrThrow({ where: { id: stored.id } })).attempts === 1,
     );
 
-    const right = await verifyCode(user.id, code);
+    const right = await verifyCode({ userId: user.id, code: code, purpose: SIGNUP, address: user.email });
     check('the correct code is accepted', right.ok);
 
-    const replay = await verifyCode(user.id, code);
+    const replay = await verifyCode({ userId: user.id, code: code, purpose: SIGNUP, address: user.email });
     check('the same code cannot be used twice', !replay.ok && replay.reason === 'no_code');
   }
 
@@ -202,12 +208,12 @@ async function main() {
   section('4. Brute force, expiry and reissue');
   {
     const user = await makeUser('authtest+brute@mitwpu.edu.in', { verificationRequired: true });
-    const { code } = await issueCode(user.id, null);
+    const { code } = await issueCode({ userId: user.id, purpose: SIGNUP, address: user.email, ipAddress: null });
     const wrong = code === '000000' ? '111111' : '000000';
 
     let lastReason = '';
     for (let attempt = 1; attempt <= OTP_MAX_ATTEMPTS; attempt += 1) {
-      const outcome = await verifyCode(user.id, wrong);
+      const outcome = await verifyCode({ userId: user.id, code: wrong, purpose: SIGNUP, address: user.email });
       lastReason = outcome.ok ? 'ok' : outcome.reason;
     }
     check(
@@ -215,27 +221,27 @@ async function main() {
       lastReason === 'too_many_attempts',
       lastReason,
     );
-    const afterLock = await verifyCode(user.id, code);
+    const afterLock = await verifyCode({ userId: user.id, code: code, purpose: SIGNUP, address: user.email });
     check('and the REAL code no longer works once locked', !afterLock.ok, 'still accepted');
 
     // Expiry.
     const expiring = await makeUser('authtest+expiry@mitwpu.edu.in', { verificationRequired: true });
-    const issued = await issueCode(expiring.id, null);
+    const issued = await issueCode({ userId: expiring.id, purpose: SIGNUP, address: expiring.email, ipAddress: null });
     await prisma.emailVerificationToken.updateMany({
       where: { userId: expiring.id, consumedAt: null },
       data: { expiresAt: new Date(Date.now() - 1000) },
     });
-    const expired = await verifyCode(expiring.id, issued.code);
+    const expired = await verifyCode({ userId: expiring.id, code: issued.code, purpose: SIGNUP, address: expiring.email });
     check('an expired code is rejected', !expired.ok && expired.reason === 'expired');
 
     // Reissue supersedes.
     const reissue = await makeUser('authtest+reissue@mitwpu.edu.in', { verificationRequired: true });
-    const first = await issueCode(reissue.id, null);
-    const second = await issueCode(reissue.id, null);
+    const first = await issueCode({ userId: reissue.id, purpose: SIGNUP, address: reissue.email, ipAddress: null });
+    const second = await issueCode({ userId: reissue.id, purpose: SIGNUP, address: reissue.email, ipAddress: null });
     check('a new code differs from the old one', first.code !== second.code);
-    const old = await verifyCode(reissue.id, first.code);
+    const old = await verifyCode({ userId: reissue.id, code: first.code, purpose: SIGNUP, address: reissue.email });
     check('issuing a new code invalidates the previous one', !old.ok);
-    const fresh = await verifyCode(reissue.id, second.code);
+    const fresh = await verifyCode({ userId: reissue.id, code: second.code, purpose: SIGNUP, address: reissue.email });
     check('and the new one works', fresh.ok);
     const live = await prisma.emailVerificationToken.count({
       where: { userId: reissue.id, consumedAt: null },
