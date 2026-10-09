@@ -11,6 +11,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  MessageSquareText,
   MonitorSmartphone,
   TrendingUp,
   Users,
@@ -22,7 +23,7 @@ import { cn, initials } from '@/lib/utils';
 /**
  * Admin chrome.
  *
- * Six destinations, no duplicates: access lives inside Users and content
+ * Seven destinations, no duplicates: access lives inside Users and content
  * management lives inside Notes, so nothing here is a shortcut to something you
  * can also reach elsewhere.
  */
@@ -37,6 +38,7 @@ const NAV: AdminNavItem[] = [
   { href: '/admin', label: 'Overview', icon: LayoutDashboard, exact: true },
   { href: '/admin/users', label: 'Users', icon: Users },
   { href: '/admin/notes', label: 'Notes', icon: FileText },
+  { href: '/admin/feedback', label: 'Feedback', icon: MessageSquareText },
   { href: '/admin/analytics', label: 'Analytics', icon: TrendingUp },
   { href: '/admin/sessions', label: 'Sessions', icon: MonitorSmartphone },
   { href: '/admin/audit', label: 'Audit', icon: ClipboardList },

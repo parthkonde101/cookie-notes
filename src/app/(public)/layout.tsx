@@ -65,6 +65,27 @@ export default async function PublicLayout({ children }: { children: React.React
           <footer className="border-t border-border">
             <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-4 py-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
               <p>© {new Date().getFullYear()} Cookie Notes</p>
+              <p>
+                Home page character: “Rigged Anime School Boy” by{' '}
+                <a
+                  href="https://sketchfab.com/3d-models/rigged-anime-school-boy-animation-included-288cb16deac54a3c95697a4e2290b499"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline-offset-4 hover:text-foreground hover:underline"
+                >
+                  suzuart
+                </a>{' '}
+                (
+                <a
+                  href="https://creativecommons.org/licenses/by/4.0/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline-offset-4 hover:text-foreground hover:underline"
+                >
+                  CC BY 4.0
+                </a>
+                ), modified for the web
+              </p>
               {auth && (
                 <p>
                   <Link

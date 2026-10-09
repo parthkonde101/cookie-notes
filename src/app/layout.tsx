@@ -1,6 +1,18 @@
 import type { Metadata, Viewport } from 'next';
+import { Lora } from 'next/font/google';
 import { Toaster } from 'sonner';
 import './globals.css';
+
+// Used only by the feedback letter (`src/components/feedback/feedback-letter.tsx`)
+// — everything else stays on the system sans stack. Self-hosted by Next at
+// build time via `next/font`, so there is no runtime request to Google Fonts.
+const letterFont = Lora({
+  subsets: ['latin'],
+  weight: ['400', '500', '600'],
+  style: ['normal', 'italic'],
+  variable: '--font-letter',
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: {
@@ -21,7 +33,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
+    <html lang="en" className={`dark ${letterFont.variable}`} suppressHydrationWarning>
       <body className="min-h-dvh bg-background">
         {children}
         <Toaster

@@ -154,6 +154,8 @@ enum EventType {
   EMAIL_VERIFICATION_SENT
   EMAIL_VERIFIED
   EMAIL_VERIFICATION_FAILED
+  // feedback
+  FEEDBACK_SUBMITTED
 }
 
 /// Delivery state of one note-ready email to one recipient.
@@ -161,6 +163,14 @@ enum NoteNotificationStatus {
   PENDING
   SENT
   FAILED
+}
+
+/// A testimonial's place in the admin moderation queue. Deliberately says
+/// nothing about whether it is shown publicly — see `Feedback.featured`.
+enum FeedbackStatus {
+  PENDING
+  REVIEWED
+  ARCHIVED
 }
 
 enum AuditAction {
@@ -200,6 +210,10 @@ enum AuditAction {
   UNIT_BAKING_DISABLED
   NOTE_NOTIFICATION_SENT
   CONFIG_CHANGED
+  FEEDBACK_REVIEWED
+  FEEDBACK_FEATURED
+  FEEDBACK_UNFEATURED
+  FEEDBACK_ARCHIVED
 }
 
 // ---------------------------------------------------------------------------
@@ -271,9 +285,9 @@ model User {
   /// NULL means "never accepted", and it must stay that way until a real
   /// checkbox with reviewed wording exists. Backfilling these would be
   /// fabricating a consent record for someone who was never shown anything.
-  termsAcceptedAt        DateTime?
-  termsVersion           String?
-  analyticsConsentAt     DateTime?
+  termsAcceptedAt         DateTime?
+  termsVersion            String?
+  analyticsConsentAt      DateTime?
   analyticsConsentVersion String?
 
   failedLoginCount Int       @default(0)
@@ -288,19 +302,21 @@ model User {
   createdById String?
 
   sessions            Session[]
-  entitlements        Entitlement[]        @relation("EntitlementUser")
-  grantedEntitlements Entitlement[]        @relation("EntitlementGrantedBy")
+  entitlements        Entitlement[]                  @relation("EntitlementUser")
+  grantedEntitlements Entitlement[]                  @relation("EntitlementGrantedBy")
   events              ActivityEvent[]
-  auditLogs           AuditLog[]           @relation("AuditActor")
-  uploadedNotes       Note[]               @relation("NoteUploader")
-  uploadedPyqs        Pyq[]                @relation("PyqUploader")
-  noteVersions        NoteVersion[]        @relation("NoteVersionAuthor")
+  auditLogs           AuditLog[]                     @relation("AuditActor")
+  uploadedNotes       Note[]                         @relation("NoteUploader")
+  uploadedPyqs        Pyq[]                          @relation("PyqUploader")
+  noteVersions        NoteVersion[]                  @relation("NoteVersionAuthor")
   noteViews           NoteView[]
   passwordResets      PasswordResetToken[]
   orders              Order[]
   unitSubscriptions   UnitNotificationSubscription[]
   noteNotifications   NoteNotification[]
   verificationTokens  EmailVerificationToken[]
+  feedback            Feedback[]                     @relation("FeedbackAuthor")
+  reviewedFeedback    Feedback[]                     @relation("FeedbackReviewer")
 
   @@index([role, status])
   @@index([createdAt])
@@ -489,7 +505,7 @@ model Subject {
 /// token, canvas reader, watermark — so the protection model is shared rather
 /// than duplicated.
 model Pyq {
-  id        String @id @default(cuid())
+  id        String  @id @default(cuid())
   subjectId String
   year      Int
   /// Optional label for the rare case of a paper needing more than its year,
@@ -521,11 +537,11 @@ model Pyq {
 }
 
 model Unit {
-  id          String   @id @default(cuid())
+  id          String  @id @default(cuid())
   subjectId   String
   name        String
   description String?
-  position    Int      @default(0)
+  position    Int     @default(0)
 
   /// "Being Baked": the notes for this unit are on the way.
   ///
@@ -583,17 +599,17 @@ model UnitNotificationSubscription {
 /// again when an admin explicitly asks for it, while any retry of one upload
 /// stays deduplicated.
 model NoteNotification {
-  id       String @id @default(cuid())
+  id       String  @id @default(cuid())
   eventKey String
   unitId   String
   noteId   String?
   userId   String
 
-  status   NoteNotificationStatus @default(PENDING)
+  status          NoteNotificationStatus @default(PENDING)
   /// True when the recipient had asked to be notified about this unit.
-  viaSubscription Boolean @default(false)
-  attempts Int     @default(0)
-  error    String?
+  viaSubscription Boolean                @default(false)
+  attempts        Int                    @default(0)
+  error           String?
 
   createdAt DateTime  @default(now())
   sentAt    DateTime?
@@ -640,18 +656,18 @@ model Note {
 
   // Storage: `storageKey` is an opaque key inside private storage. It is never
   // sent to the browser.
-  storageKey   String
-  fileName     String
-  fileSize     Int
-  mimeType     String  @default("application/pdf")
-  checksum     String?
-  pageCount    Int?
-  version      Int     @default(1)
+  storageKey String
+  fileName   String
+  fileSize   Int
+  mimeType   String  @default("application/pdf")
+  checksum   String?
+  pageCount  Int?
+  version    Int     @default(1)
 
   /// List price in the smallest currency unit (paise). 0 means the note is not
   /// individually priced. Nothing charges against this yet — it drives what the
   /// catalogue shows, so the paid model is visible before payments exist.
-  priceMinor   Int     @default(0)
+  priceMinor Int @default(0)
 
   viewCount    Int       @default(0)
   lastViewedAt DateTime?
@@ -713,11 +729,11 @@ model NoteVersion {
 /// constraint (Postgres treats NULLs as distinct, so a composite unique across
 /// nullable FKs would not actually prevent duplicates).
 model Entitlement {
-  id         String            @id @default(cuid())
-  userId     String
-  scope      EntitlementScope
-  targetKey  String
-  source     EntitlementSource @default(ADMIN_GRANT)
+  id        String            @id @default(cuid())
+  userId    String
+  scope     EntitlementScope
+  targetKey String
+  source    EntitlementSource @default(ADMIN_GRANT)
 
   semesterId String?
   subjectId  String?
@@ -731,9 +747,9 @@ model Entitlement {
   grantedAt DateTime  @default(now())
   expiresAt DateTime?
 
-  user      User  @relation("EntitlementUser", fields: [userId], references: [id], onDelete: Cascade)
-  grantedBy User? @relation("EntitlementGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
-  noteRef   Note? @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  user      User   @relation("EntitlementUser", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy User?  @relation("EntitlementGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+  noteRef   Note?  @relation(fields: [noteId], references: [id], onDelete: Cascade)
   order     Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
 
   @@unique([userId, targetKey])
@@ -834,4 +850,37 @@ model AuditLog {
   @@index([actorId, createdAt])
   @@index([action, createdAt])
   @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Feedback / testimonials
+// ---------------------------------------------------------------------------
+
+/// A student's account is the only source of their public name — this model
+/// never duplicates it. `status` and `featured` are deliberately independent:
+/// reviewing a testimonial is a moderation step, featuring it is a separate,
+/// explicit publishing decision. A testimonial may only be featured once it is
+/// REVIEWED and `publicConsent` is true; that rule is enforced by the admin
+/// action, not the database.
+model Feedback {
+  id            String         @id @default(cuid())
+  userId        String
+  message       String
+  publicConsent Boolean        @default(false)
+  status        FeedbackStatus @default(PENDING)
+  featured      Boolean        @default(false)
+  featuredAt    DateTime?
+  reviewedAt    DateTime?
+  reviewedById  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User  @relation("FeedbackAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy User? @relation("FeedbackReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([featured, featuredAt])
+  @@index([userId, createdAt])
+  @@map("feedback")
 }

@@ -78,6 +78,21 @@ export function initials(name: string): string {
     .join('');
 }
 
+/**
+ * "Ayush Mehta" -> "Ayush M." — what a testimonial shows publicly.
+ *
+ * Never the full name: a first-name-plus-initial is enough to feel personal
+ * without being enough to look someone up. A single-word name (no surname to
+ * initial) is returned as-is rather than guessed at.
+ */
+export function publicDisplayName(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return parts[0] ?? name;
+  const first = parts[0];
+  const lastInitial = parts[parts.length - 1][0]?.toUpperCase();
+  return lastInitial ? `${first} ${lastInitial}.` : first;
+}
+
 export function slugify(input: string): string {
   return input
     .toLowerCase()

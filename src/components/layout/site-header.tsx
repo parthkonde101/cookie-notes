@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { ChevronDown, Cookie, LogOut, Shield, UserRound } from 'lucide-react';
+import { usePathname, useRouter } from 'next/navigation';
+import { ChevronDown, Cookie, LogOut, Menu, Shield, UserRound, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuthModal } from '@/components/auth/auth-modal';
 import { cn, initials } from '@/lib/utils';
@@ -14,26 +14,58 @@ export interface HeaderUser {
   role: 'STUDENT' | 'ADMIN';
 }
 
+const NAV_LINKS = [
+  { href: '/home', label: 'Home' },
+  { href: '/catalog', label: 'Catalog' },
+  { href: '/about', label: 'About' },
+  { href: '/feedback', label: 'Feedback' },
+] as const;
+
 /**
- * One header for the whole public product. The catalogue is the destination, so
- * there is nothing else to navigate to — signed out you get sign-in controls,
- * signed in you get an account menu, and the page under it never changes.
+ * Whether a nav link matches what's currently on screen.
+ *
+ * Everything but the root URL is a literal pathname match. The root URL is
+ * special: `/` itself shows Home to a guest and the catalogue to a signed-in
+ * visitor (see the root page), so the nav should highlight whichever of
+ * "Home" or "Catalog" actually matches what that visitor is looking at,
+ * even though the address bar just says `/`.
+ */
+function isNavLinkActive(href: string, pathname: string, signedIn: boolean): boolean {
+  if (pathname === href) return true;
+  if (pathname === '/') {
+    if (href === '/home') return !signedIn;
+    if (href === '/catalog') return signedIn;
+  }
+  return false;
+}
+
+/**
+ * One header for the whole public product. Signed out you get sign-in
+ * controls, signed in you get an account menu — the nav in between is the
+ * same set of destinations either way, since none of them require an account.
  */
 export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveUsers?: number }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { requestAuth } = useAuthModal();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuOpen && !navOpen) return;
 
     const onPointerDown = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+      if (menuOpen && !menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+      if (navOpen && !navRef.current?.contains(event.target as Node)) setNavOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuOpen(false);
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+        setNavOpen(false);
+      }
     };
 
     document.addEventListener('mousedown', onPointerDown);
@@ -42,7 +74,12 @@ export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveU
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [menuOpen]);
+  }, [menuOpen, navOpen]);
+
+  // Collapse the mobile nav automatically once a link has taken us somewhere.
+  useEffect(() => {
+    setNavOpen(false);
+  }, [pathname]);
 
   async function signOut() {
     setSigningOut(true);
@@ -71,7 +108,68 @@ export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveU
           <span className="truncate text-[0.95rem] font-semibold tracking-tight">Cookie Notes</span>
         </Link>
 
+        <nav aria-label="Primary" className="hidden shrink-0 items-center gap-1 md:flex">
+          {NAV_LINKS.map((link) => {
+            const active = isNavLinkActive(link.href, pathname, Boolean(user));
+            return (
+              <Link
+                key={link.href}
+                href={link.href}
+                aria-current={active ? 'page' : undefined}
+                className={cn(
+                  'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                  active
+                    ? 'text-foreground'
+                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                )}
+              >
+                {link.label}
+              </Link>
+            );
+          })}
+        </nav>
+
         <div className="flex-1" />
+
+        <div className="relative shrink-0 md:hidden" ref={navRef}>
+          <button
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={navOpen}
+            aria-label={navOpen ? 'Close menu' : 'Open menu'}
+            onClick={() => setNavOpen((value) => !value)}
+            className="flex size-8 items-center justify-center rounded-md border border-border transition-colors hover:bg-secondary"
+          >
+            {navOpen ? <X className="size-4" /> : <Menu className="size-4" />}
+          </button>
+
+          {navOpen && (
+            <div
+              role="menu"
+              className="absolute left-0 top-[calc(100%+0.4rem)] w-48 overflow-hidden rounded-md border border-border bg-popover py-1 shadow-xl animate-fade-in"
+            >
+              {NAV_LINKS.map((link) => {
+                const active = isNavLinkActive(link.href, pathname, Boolean(user));
+                return (
+                  <Link
+                    key={link.href}
+                    href={link.href}
+                    role="menuitem"
+                    aria-current={active ? 'page' : undefined}
+                    className={cn(
+                      'block px-3.5 py-2 text-sm transition-colors',
+                      active
+                        ? 'font-medium text-foreground'
+                        : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                    )}
+                  >
+                    {link.label}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         {user && others > 0 && (
           <span className="mr-1 hidden items-center gap-2 rounded-full border border-border px-3 py-1 text-xs text-muted-foreground sm:inline-flex">

@@ -154,6 +154,15 @@ export const confirmEmailChangeSchema = z.object({
 
 export const forgotPasswordSchema = z.object({ email: emailSchema });
 
+/**
+ * A testimonial, not a bug report — no name or email here. Both are read from
+ * the authenticated session server-side, never accepted from the client.
+ */
+export const feedbackSchema = z.object({
+  message: z.string().trim().min(20, 'Tell us a little more about your experience.').max(600),
+  publicConsent: z.boolean(),
+});
+
 export const resetPasswordSchema = z
   .object({
     token: z.string().min(10),

@@ -67,6 +67,11 @@ const config: Config = {
       fontFamily: {
         sans: ['var(--font-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        // A warm literary serif for the feedback letter only — the rest of the
+        // product stays on the system sans stack. Lora's calligraphy-influenced
+        // curves read as "written", while staying a proper text serif: fully
+        // readable at paragraph length, unlike a script/handwriting font.
+        letter: ['var(--font-letter)', 'Georgia', 'Cambria', 'serif'],
       },
       keyframes: {
         'accordion-down': {
@@ -96,6 +101,17 @@ const config: Config = {
         shimmer: {
           '100%': { transform: 'translateX(100%)' },
         },
+        /*
+         * A marquee track holding its content twice back-to-back. Translating
+         * exactly -50% moves the first copy fully out of view at the same
+         * instant the second copy reaches the start position — the loop has no
+         * seam because the two halves are pixel-identical, not because the
+         * animation "resets".
+         */
+        marquee: {
+          from: { transform: 'translateX(0)' },
+          to: { transform: 'translateX(-50%)' },
+        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
@@ -104,6 +120,7 @@ const config: Config = {
         // 200ms, `both` so the element is already invisible before its stagger
         // delay elapses rather than flashing at full opacity first.
         'catalog-enter': 'catalog-enter 200ms cubic-bezier(0.16, 1, 0.3, 1) both',
+        marquee: 'marquee 40s linear infinite',
       },
     },
   },
