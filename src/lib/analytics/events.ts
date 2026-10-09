@@ -3,6 +3,18 @@ import { prisma } from '@/lib/prisma';
 import type { EventType } from '@/generated/prisma/enums';
 import type { RequestContext } from '@/lib/request';
 
+/**
+ * How a public page view is recorded.
+ *
+ * `DASHBOARD_VIEWED` was defined from the start and nothing ever wrote it, so it
+ * carries page views — with the page named in `metadata.page` — instead of a
+ * new event type. A new type would be a database enum change, and the deploy
+ * does not run migrations: a missing value would make every recording fail.
+ * Everything that reads or writes page views goes through this constant, so
+ * moving to a dedicated type later is a change in one place.
+ */
+export const PAGE_VIEW_EVENT = 'DASHBOARD_VIEWED' as const satisfies EventType;
+
 export interface EventInput {
   type: EventType;
   userId?: string | null;

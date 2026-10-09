@@ -2,6 +2,7 @@ import 'server-only';
 import { prisma } from '@/lib/prisma';
 import { env } from '@/lib/env';
 import { liveCutoff } from '@/lib/auth/session';
+import { PAGE_VIEW_EVENT } from '@/lib/analytics/events';
 
 /**
  * Every figure the dashboards show comes from one of these queries. There is no
@@ -43,6 +44,13 @@ export async function adminOverview() {
     dau,
     wau,
     mau,
+    verifiedStudents,
+    readersToday,
+    readersEver,
+    returningStudents,
+    readingTime,
+    reminders,
+    feedbackCount,
   ] = await Promise.all([
     prisma.user.count({ where: { role: 'STUDENT' } }),
     prisma.user.count({ where: { role: 'STUDENT', status: 'ACTIVE' } }),
@@ -60,6 +68,15 @@ export async function adminOverview() {
     distinctActiveUsers(today),
     distinctActiveUsers(weekAgo),
     distinctActiveUsers(monthAgo),
+    prisma.user.count({ where: { role: 'STUDENT', emailVerifiedAt: { not: null } } }),
+    distinctStudentReaders(today),
+    distinctStudentReaders(null),
+    returningStudentsSince(weekAgo),
+    prisma.$queryRaw<{ avg_ms: number | null }[]>`
+      SELECT AVG("durationMs")::float AS avg_ms FROM note_views WHERE "durationMs" > 0
+    `,
+    prisma.unitNotificationSubscription.count(),
+    prisma.feedback.count(),
   ]);
 
   const [mostViewedNote, mostActiveUsers] = await Promise.all([
@@ -86,10 +103,49 @@ export async function adminOverview() {
     dau,
     wau,
     mau,
+    verifiedStudents,
+    readersToday,
+    /** Students who have opened at least one note, ever. */
+    readersEver,
+    /** Students who came back on a second day within the last week. */
+    returningStudents,
+    averageReadMs: Math.round(readingTime[0]?.avg_ms ?? 0),
+    /** "Notify me" requests on units still being baked — unmet demand. */
+    reminders,
+    feedbackCount,
     mostViewedNote,
     mostActiveUsers,
     liveWindowMinutes: env.liveWindowMinutes,
   };
+}
+
+/** Distinct students who opened a note — since a date, or ever when null. */
+async function distinctStudentReaders(since: Date | null): Promise<number> {
+  const rows = await prisma.activityEvent.findMany({
+    where: {
+      type: 'NOTE_OPENED',
+      user: { role: 'STUDENT' },
+      ...(since ? { createdAt: { gte: since } } : {}),
+    },
+    select: { userId: true },
+    distinct: ['userId'],
+  });
+  return rows.length;
+}
+
+/** Students active on at least two different days since a date. */
+async function returningStudentsSince(since: Date): Promise<number> {
+  const rows = await prisma.$queryRaw<{ count: number }[]>`
+    SELECT COUNT(*)::int AS count FROM (
+      SELECT e."userId"
+      FROM activity_events e
+      JOIN users u ON u.id = e."userId" AND u.role = 'STUDENT'
+      WHERE e."createdAt" >= ${since}
+      GROUP BY e."userId"
+      HAVING COUNT(DISTINCT date_trunc('day', e."createdAt")) >= 2
+    ) AS multi_day
+  `;
+  return rows[0]?.count ?? 0;
 }
 
 async function distinctActiveUsers(since: Date): Promise<number> {
@@ -327,4 +383,182 @@ export async function engagementAnalytics() {
     averageSessionsPerUser:
       totalStudents > 0 ? Number((totalSessions / totalStudents).toFixed(1)) : 0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Reach: which pages and which programmes students use
+// ---------------------------------------------------------------------------
+
+export type ProgramKey = 'BTECH' | 'POLYTECHNIC';
+
+export interface PageViewStats {
+  page: 'home' | 'about';
+  /** Distinct signed-in students in the window. */
+  students: number;
+  /** All views in the window by signed-in students. */
+  studentViews: number;
+  /** Views in the window by visitors who were not signed in. */
+  visitorViews: number;
+  studentsAllTime: number;
+  viewsAllTime: number;
+  /** When counting began, or null while nothing has been recorded. */
+  since: Date | null;
+  series: SeriesPoint[];
+}
+
+/**
+ * Views of the Home and About pages. Admin views are left out; a signed-out
+ * visitor counts as a view but not as a student.
+ */
+export async function pageViewAnalytics(days: number): Promise<PageViewStats[]> {
+  const rows = await prisma.$queryRaw<
+    {
+      page: string;
+      students: number;
+      student_views: number;
+      visitor_views: number;
+      students_all: number;
+      views_all: number;
+      first_at: Date | null;
+    }[]
+  >`
+    SELECT e.metadata->>'page' AS page,
+           COUNT(DISTINCT e."userId") FILTER (
+             WHERE e."createdAt" >= NOW() - (${days}::int * INTERVAL '1 day'))::int AS students,
+           COUNT(*) FILTER (
+             WHERE e."userId" IS NOT NULL
+               AND e."createdAt" >= NOW() - (${days}::int * INTERVAL '1 day'))::int AS student_views,
+           COUNT(*) FILTER (
+             WHERE e."userId" IS NULL
+               AND e."createdAt" >= NOW() - (${days}::int * INTERVAL '1 day'))::int AS visitor_views,
+           COUNT(DISTINCT e."userId")::int AS students_all,
+           COUNT(*)::int AS views_all,
+           MIN(e."createdAt") AS first_at
+    FROM activity_events e
+    LEFT JOIN users u ON u.id = e."userId"
+    WHERE e.type = ${PAGE_VIEW_EVENT}::"EventType"
+      AND e.metadata->>'page' IN ('home', 'about')
+      AND (e."userId" IS NULL OR u.role = 'STUDENT')
+    GROUP BY e.metadata->>'page'
+  `;
+
+  const series = await Promise.all(
+    (['home', 'about'] as const).map((page) =>
+      prisma.$queryRaw<SeriesPoint[]>`
+        SELECT to_char(d.day, 'YYYY-MM-DD') AS date,
+               COALESCE(COUNT(v.id), 0)::int AS value
+        FROM generate_series(
+               (CURRENT_DATE - (${days - 1}::int) * INTERVAL '1 day')::date,
+               CURRENT_DATE,
+               INTERVAL '1 day'
+             ) AS d(day)
+        LEFT JOIN (
+          SELECT e.id, e."createdAt"
+          FROM activity_events e
+          LEFT JOIN users u ON u.id = e."userId"
+          WHERE e.type = ${PAGE_VIEW_EVENT}::"EventType"
+            AND e.metadata->>'page' = ${page}
+            AND (e."userId" IS NULL OR u.role = 'STUDENT')
+        ) v
+          ON v."createdAt" >= d.day AND v."createdAt" < d.day + INTERVAL '1 day'
+        GROUP BY d.day
+        ORDER BY d.day
+      `,
+    ),
+  );
+
+  return (['home', 'about'] as const).map((page, index) => {
+    const row = rows.find((candidate) => candidate.page === page);
+    return {
+      page,
+      students: row?.students ?? 0,
+      studentViews: row?.student_views ?? 0,
+      visitorViews: row?.visitor_views ?? 0,
+      studentsAllTime: row?.students_all ?? 0,
+      viewsAllTime: row?.views_all ?? 0,
+      since: row?.first_at ?? null,
+      series: series[index],
+    };
+  });
+}
+
+export interface ProgramStats {
+  program: ProgramKey;
+  /** Distinct students who opened a note in the window. */
+  students: number;
+  noteOpens: number;
+  paperOpens: number;
+  catalogueViews: number;
+  studentsAllTime: number;
+  noteOpensAllTime: number;
+  publishedNotes: number;
+}
+
+/**
+ * How many students use the B.Tech and Polytechnic notes. A note belongs to a
+ * subject, a subject to a semester, and a semester to one programme — so every
+ * recorded note opening already says which programme it was, including all the
+ * ones from before this report existed.
+ */
+export async function programAnalytics(days: number): Promise<ProgramStats[]> {
+  const [notes, papers, catalogue, published] = await Promise.all([
+    prisma.$queryRaw<
+      { program: string; students: number; opens: number; students_all: number; opens_all: number }[]
+    >`
+      SELECT sem.program::text AS program,
+             COUNT(DISTINCT e."userId") FILTER (
+               WHERE e."createdAt" >= NOW() - (${days}::int * INTERVAL '1 day'))::int AS students,
+             COUNT(*) FILTER (
+               WHERE e."createdAt" >= NOW() - (${days}::int * INTERVAL '1 day'))::int AS opens,
+             COUNT(DISTINCT e."userId")::int AS students_all,
+             COUNT(*)::int AS opens_all
+      FROM activity_events e
+      JOIN users u ON u.id = e."userId" AND u.role = 'STUDENT'
+      JOIN notes n ON n.id = e."noteId"
+      JOIN subjects s ON s.id = n."subjectId"
+      JOIN semesters sem ON sem.id = s."semesterId"
+      WHERE e.type = 'NOTE_OPENED'
+      GROUP BY sem.program
+    `,
+    prisma.$queryRaw<{ program: string; opens: number }[]>`
+      SELECT sem.program::text AS program, COUNT(*)::int AS opens
+      FROM activity_events e
+      JOIN users u ON u.id = e."userId" AND u.role = 'STUDENT'
+      JOIN subjects s ON s.id = e."subjectId"
+      JOIN semesters sem ON sem.id = s."semesterId"
+      WHERE e.type = 'PYQ_OPENED'
+        AND e."createdAt" >= NOW() - (${days}::int * INTERVAL '1 day')
+      GROUP BY sem.program
+    `,
+    prisma.$queryRaw<{ program: string; views: number }[]>`
+      SELECT e.metadata->>'program' AS program, COUNT(*)::int AS views
+      FROM activity_events e
+      WHERE e.type = 'CATALOG_VIEWED'
+        AND e.metadata->>'program' IS NOT NULL
+        AND e."createdAt" >= NOW() - (${days}::int * INTERVAL '1 day')
+      GROUP BY e.metadata->>'program'
+    `,
+    prisma.$queryRaw<{ program: string; notes: number }[]>`
+      SELECT sem.program::text AS program, COUNT(n.id)::int AS notes
+      FROM notes n
+      JOIN subjects s ON s.id = n."subjectId"
+      JOIN semesters sem ON sem.id = s."semesterId"
+      WHERE n.status = 'PUBLISHED'
+      GROUP BY sem.program
+    `,
+  ]);
+
+  return (['BTECH', 'POLYTECHNIC'] as const).map((program) => {
+    const n = notes.find((row) => row.program === program);
+    return {
+      program,
+      students: n?.students ?? 0,
+      noteOpens: n?.opens ?? 0,
+      paperOpens: papers.find((row) => row.program === program)?.opens ?? 0,
+      catalogueViews: catalogue.find((row) => row.program === program)?.views ?? 0,
+      studentsAllTime: n?.students_all ?? 0,
+      noteOpensAllTime: n?.opens_all ?? 0,
+      publishedNotes: published.find((row) => row.program === program)?.notes ?? 0,
+    };
+  });
 }

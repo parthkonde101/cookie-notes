@@ -12,7 +12,12 @@ import {
   contentAnalytics,
   engagementAnalytics,
   growthSeries,
+  pageViewAnalytics,
+  programAnalytics,
+  type PageViewStats,
+  type ProgramStats,
 } from '@/lib/analytics/queries';
+import { programLabel } from '@/lib/program';
 import { formatDate, formatDuration, relativeTime } from '@/lib/utils';
 
 export const metadata: Metadata = { title: 'Analytics' };
@@ -28,11 +33,20 @@ export default async function AnalyticsPage({
   const { days: daysParam } = await searchParams;
   const days = [7, 30, 90].includes(Number(daysParam)) ? Number(daysParam) : 30;
 
-  const [overview, series, content, engagement] = await Promise.all([
+  // The two reach reports are newer than the rest. If either cannot be computed
+  // the page still loads, with a note in its place, rather than failing whole.
+  const unavailable = (name: string) => (error: unknown) => {
+    console.error(`[admin] ${name} unavailable`, error);
+    return null;
+  };
+
+  const [overview, series, content, engagement, pages, programs] = await Promise.all([
     adminOverview(),
     growthSeries(days),
     contentAnalytics(),
     engagementAnalytics(),
+    pageViewAnalytics(days).catch(unavailable('page views')),
+    programAnalytics(days).catch(unavailable('programme access')),
   ]);
 
   return (
@@ -83,6 +97,34 @@ export default async function AnalyticsPage({
             hint="First to last activity"
           />
         </div>
+      </section>
+
+      {/* Reach: which pages and which programmes students use */}
+      <section className="mt-8 space-y-3">
+        <h2 className="text-sm font-medium text-muted-foreground">
+          Where students go · last {days} days
+        </h2>
+
+        {pages ? (
+          <div className="grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
+            {pages.map((stats) => (
+              <PageViewCard
+                key={stats.page}
+                stats={stats}
+                registered={overview.totalUsers}
+                days={days}
+              />
+            ))}
+          </div>
+        ) : (
+          <Unavailable>Page views could not be loaded right now.</Unavailable>
+        )}
+
+        {programs ? (
+          <ProgramSplit programs={programs} />
+        ) : (
+          <Unavailable>Programme access could not be loaded right now.</Unavailable>
+        )}
       </section>
 
       {/* Growth */}
@@ -286,5 +328,171 @@ function ChartCard({
       </CardHeader>
       <CardContent>{children}</CardContent>
     </Card>
+  );
+}
+
+const PAGE_COPY = {
+  home: {
+    title: 'Home page',
+    description: 'The scroll-through introduction, at Home and at / for signed-out visitors',
+  },
+  about: { title: 'About page', description: 'Who is behind Cookie Notes' },
+} as const;
+
+function formatPercent(part: number, whole: number): string {
+  return whole > 0 ? `${Math.round((part / whole) * 100)}%` : '—';
+}
+
+function MiniStat({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: React.ReactNode;
+  hint?: React.ReactNode;
+}) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-0.5 text-lg font-semibold tabular-nums tracking-tight">{value}</p>
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+function Unavailable({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+      {children}
+    </p>
+  );
+}
+
+/** How many students looked at one public page, and how that moved day to day. */
+function PageViewCard({
+  stats,
+  registered,
+  days,
+}: {
+  stats: PageViewStats;
+  registered: number;
+  days: number;
+}) {
+  const copy = PAGE_COPY[stats.page];
+  const views = stats.studentViews + stats.visitorViews;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle>{copy.title}</CardTitle>
+        <CardDescription>{copy.description}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-end gap-3">
+          <p className="stat-value">{stats.students}</p>
+          <p className="pb-1 text-sm text-muted-foreground">
+            {stats.students === 1 ? 'student' : 'students'} viewed it in {days} days
+          </p>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3 border-t border-border pt-3">
+          <MiniStat label="Views" value={views} hint={`${stats.studentViews} by students`} />
+          <MiniStat label="Not signed in" value={stats.visitorViews} hint="Visitor views" />
+          <MiniStat
+            label="All time"
+            value={stats.studentsAllTime}
+            hint={`${formatPercent(stats.studentsAllTime, registered)} of students`}
+          />
+        </div>
+
+        <TrendChart data={stats.series} suffix="views" variant="bar" />
+
+        <p className="text-xs text-muted-foreground">
+          {stats.since
+            ? `Counting since ${formatDate(stats.since)}.`
+            : 'No views recorded yet — counting began with this release, so earlier visits are not included.'}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** B.Tech and Polytechnic side by side: how many students read each, and how much. */
+function ProgramSplit({ programs }: { programs: ProgramStats[] }) {
+  const totalOpens = programs.reduce((sum, program) => sum + program.noteOpens, 0);
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
+        {programs.map((program) => (
+          <Card key={program.program}>
+            <CardHeader className="pb-3">
+              <CardTitle>{programLabel(program.program)} notes</CardTitle>
+              <CardDescription>Students who opened at least one note in this period</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-end gap-3">
+                <p className="stat-value">{program.students}</p>
+                <p className="pb-1 text-sm text-muted-foreground">
+                  {program.students === 1 ? 'student' : 'students'}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 border-t border-border pt-3">
+                <MiniStat
+                  label="Note opens"
+                  value={program.noteOpens}
+                  hint={
+                    program.students > 0
+                      ? `${(program.noteOpens / program.students).toFixed(1)} per student`
+                      : undefined
+                  }
+                />
+                <MiniStat label="Past papers" value={program.paperOpens} hint="Opened" />
+                <MiniStat label="Catalogue" value={program.catalogueViews} hint="Shelf views" />
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                All time: {program.studentsAllTime}{' '}
+                {program.studentsAllTime === 1 ? 'student' : 'students'} ·{' '}
+                {program.noteOpensAllTime} note opens · {program.publishedNotes} published notes
+              </p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {totalOpens > 0 && (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Share of note opens
+          </p>
+          <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-secondary" aria-hidden>
+            {programs.map((program, index) => (
+              <span
+                key={program.program}
+                className={index === 0 ? 'bg-primary' : 'bg-success'}
+                style={{ width: `${(program.noteOpens / totalOpens) * 100}%` }}
+              />
+            ))}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+            {programs.map((program, index) => (
+              <span key={program.program} className="inline-flex items-center gap-1.5">
+                <span
+                  aria-hidden
+                  className={`size-2 rounded-full ${index === 0 ? 'bg-primary' : 'bg-success'}`}
+                />
+                {programLabel(program.program)}{' '}
+                <span className="font-medium tabular-nums text-foreground">
+                  {formatPercent(program.noteOpens, totalOpens)}
+                </span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

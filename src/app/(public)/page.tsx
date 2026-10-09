@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { CatalogueScreen } from '@/components/catalog/catalogue-screen';
 import { HomeIntro } from '@/components/home/home-intro';
 import { optionalUser } from '@/lib/auth/guards';
+import { trackPageView } from '@/lib/analytics/page-views';
 
 export const metadata: Metadata = {
   title: 'Cookie Notes — baked for exams',
@@ -32,5 +33,7 @@ export default async function RootPage({
     return <CatalogueScreen searchParams={searchParams} />;
   }
 
+  // A signed-out visitor sees Home here, so it counts as a Home view.
+  await trackPageView('home');
   return <HomeIntro />;
 }

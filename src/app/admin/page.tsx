@@ -2,11 +2,15 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import {
   Activity,
+  BellRing,
   BookOpen,
-  Eye,
-  FileText,
+  BookOpenCheck,
+  Clock,
   Flame,
+  MessageSquareText,
+  Repeat,
   TrendingUp,
+  UserCheck,
   UserPlus,
   Users,
 } from 'lucide-react';
@@ -16,7 +20,7 @@ import { StatCard } from '@/components/admin/stat-card';
 import { TrendChart } from '@/components/charts/trend-chart';
 import { requireAdmin } from '@/lib/auth/guards';
 import { adminOverview, growthSeries } from '@/lib/analytics/queries';
-import { relativeTime } from '@/lib/utils';
+import { formatDuration, relativeTime } from '@/lib/utils';
 
 export const metadata: Metadata = { title: 'Admin overview' };
 export const dynamic = 'force-dynamic';
@@ -33,23 +37,94 @@ export default async function AdminDashboard() {
         description="Live numbers from the database — nothing here is estimated."
       />
 
-      <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Total students" value={stats.totalUsers} icon={Users} hint={`${stats.activeUsers} active · ${stats.disabledUsers} disabled`} />
-        <StatCard
-          label="Studying now"
-          value={stats.liveSessions}
-          icon={Flame}
-          tone="success"
-          hint={`Active in the last ${stats.liveWindowMinutes} minutes`}
-        />
-        <StatCard label="New today" value={stats.newToday} icon={UserPlus} hint={`${stats.newThisWeek} in the last 7 days`} />
-        <StatCard label="Notes" value={stats.totalNotes} icon={FileText} hint={`${stats.publishedNotes} published · ${stats.totalSubjects} subjects`} />
+      {/* Reach — who is here, and how many of them are real, verified students. */}
+      <section className="mt-6 space-y-3">
+        <h2 className="text-sm font-medium text-muted-foreground">Reach</h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            label="Total students"
+            value={stats.totalUsers}
+            icon={Users}
+            hint={`${stats.activeUsers} active · ${stats.disabledUsers} disabled`}
+          />
+          <StatCard
+            label="Verified students"
+            value={stats.verifiedStudents}
+            icon={UserCheck}
+            tone="success"
+            hint={`${percent(stats.verifiedStudents, stats.totalUsers)} of students have a verified college email`}
+          />
+          <StatCard
+            label="New this week"
+            value={stats.newThisWeek}
+            icon={UserPlus}
+            hint={`${stats.newToday} today`}
+          />
+          <StatCard
+            label="Studying now"
+            value={stats.liveSessions}
+            icon={Flame}
+            tone="success"
+            hint={`Active in the last ${stats.liveWindowMinutes} minutes`}
+          />
+        </div>
+      </section>
 
-        <StatCard label="Note views today" value={stats.viewsToday} icon={Eye} hint={`${stats.totalViews} all time`} />
-        <StatCard label="Daily active" value={stats.dau} icon={Activity} hint="Distinct users with activity today" />
-        <StatCard label="Weekly active" value={stats.wau} icon={Activity} hint="Last 7 days" />
-        <StatCard label="Monthly active" value={stats.mau} icon={TrendingUp} hint="Last 30 days" />
-      </div>
+      {/* Use — are they coming back, and are they actually reading. */}
+      <section className="mt-6 space-y-3">
+        <h2 className="text-sm font-medium text-muted-foreground">Use</h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            label="Active today"
+            value={stats.dau}
+            icon={Activity}
+            hint={`${stats.wau} this week · ${stats.mau} this month`}
+          />
+          <StatCard
+            label="Read a note today"
+            value={stats.readersToday}
+            icon={BookOpenCheck}
+            hint={`${stats.viewsToday} notes opened today`}
+          />
+          <StatCard
+            label="Activation"
+            value={percent(stats.readersEver, stats.totalUsers)}
+            icon={TrendingUp}
+            tone="primary"
+            hint={`${stats.readersEver} of ${stats.totalUsers} students have opened a note`}
+          />
+          <StatCard
+            label="Came back this week"
+            value={stats.returningStudents}
+            icon={Repeat}
+            hint="Active on two or more days in the last 7"
+          />
+          <StatCard
+            label="Average reading time"
+            value={formatDuration(stats.averageReadMs)}
+            icon={Clock}
+            hint="Per reading session"
+          />
+          <StatCard
+            label="Waiting for notes"
+            value={stats.reminders}
+            icon={BellRing}
+            hint="“Notify me” requests on units still baking"
+          />
+          <StatCard
+            label="Notes per reader"
+            value={stats.readersEver > 0 ? (stats.totalViews / stats.readersEver).toFixed(1) : '—'}
+            icon={BookOpen}
+            hint={`${stats.totalViews} opens by ${stats.readersEver} readers, all time`}
+          />
+          <StatCard
+            label="Feedback received"
+            value={stats.feedbackCount}
+            icon={MessageSquareText}
+            hint="Testimonials written by students"
+          />
+        </div>
+      </section>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
         <Card>
@@ -155,4 +230,10 @@ export default async function AdminDashboard() {
       </div>
     </PageContainer>
   );
+}
+
+/** "42%" — or a dash while there is no one to divide by. */
+function percent(part: number, whole: number): string {
+  if (whole <= 0) return '—';
+  return `${Math.round((part / whole) * 100)}%`;
 }
