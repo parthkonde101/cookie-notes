@@ -18,6 +18,7 @@ import { sendMail, verificationCodeEmail } from '@/lib/mail';
 import {
   confirmEmailChangeSchema,
   firstError,
+  isStudentEmail,
   requestEmailChangeSchema,
 } from '@/lib/validation';
 
@@ -75,7 +76,13 @@ export async function POST(request: NextRequest) {
     }
 
     if (email === user.email) {
-      throw Errors.validation('That is already your email address.');
+      // A student already on a college address is not stuck: they can verify it
+      // as it stands. Say so, instead of leaving them at a dead end.
+      throw Errors.validation(
+        isStudentEmail(user.email)
+          ? 'That is the address you already have. Choose “Verify my current email” to confirm it, or enter a different MIT-WPU address.'
+          : 'That is already your email address.',
+      );
     }
 
     // Somebody else may already own it. Never overwrite, never merge — and say

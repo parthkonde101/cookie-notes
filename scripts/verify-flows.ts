@@ -1313,10 +1313,17 @@ async function main() {
     // The catalogue stays open — it always was.
     const catalogue = await legacy.request(`/subject/${subject.slug}`);
     check('the catalogue is still browsable while unverified', catalogue.status === 200);
-    const catalogueHtml = await catalogue.text();
+
+    // The reminder is on the catalogue page itself (not on every page): one
+    // quiet line and a way in. Why a click on a note is refused is explained by
+    // the dialog at that moment, which only exists once it is opened.
+    const shelf = await legacy.request('/catalog');
+    const shelfHtml = await shelf.text();
     check(
-      'and says why reading is blocked',
-      catalogueHtml.includes('Verify your MIT-WPU email'),
+      'and the catalogue page tells them to verify',
+      shelf.status === 200 &&
+        shelfHtml.includes('Verify your MIT-WPU email') &&
+        shelfHtml.includes('Verify now'),
     );
 
     // The gate, on a note this account is entitled to.

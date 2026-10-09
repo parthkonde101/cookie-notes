@@ -13,14 +13,16 @@ export interface Testimonial {
  *
  * The `select` is the whole security model: email, user id and every other
  * account field are simply never fetched, so there is no later mistake that
- * could leak them into a public page. `featured` and `publicConsent` are both
- * required — an admin can only ever feature a testimonial that already has
- * consent (enforced in the admin action), but this query checks both anyway
- * rather than trusting that invariant blindly.
+ * could leak them into a public page. A testimonial is returned only when all
+ * three hold: it has been REVIEWED by an admin, the student consented to public
+ * display, and it has been explicitly featured. The admin actions already keep
+ * those in step — featuring requires review and consent, archiving un-features —
+ * but this query checks all three itself rather than trusting that invariant: a
+ * row that is featured but still pending, or archived, is never shown.
  */
 export async function featuredTestimonials(limit = 12): Promise<Testimonial[]> {
   const rows = await prisma.feedback.findMany({
-    where: { featured: true, publicConsent: true },
+    where: { status: 'REVIEWED', featured: true, publicConsent: true },
     orderBy: [{ featuredAt: 'desc' }, { createdAt: 'desc' }],
     take: limit,
     select: {

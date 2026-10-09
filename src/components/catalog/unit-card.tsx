@@ -179,9 +179,14 @@ export function UnitRow({
           // Being Baked. The cookie is decorative; the words carry the state, so
           // nothing here depends on the animation being seen or running.
           <>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2.5">
               <BakingCookie />
-              <p className="text-sm font-medium text-primary">Being baked</p>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-primary">Being Baked</p>
+                <p className="text-xs leading-snug text-muted-foreground">
+                  Fresh notes are on the way…
+                </p>
+              </div>
             </div>
             <NotifyMeButton
               unitId={unitId}

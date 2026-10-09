@@ -7,86 +7,53 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert } from '@/components/ui/feedback';
+import { purposeOf } from '@/components/auth/college-email-form';
 
 const RESEND_COOLDOWN_SECONDS = 60;
 
 /**
- * What the student came here to do, taken from where they will land afterwards,
- * so the screen can say why verification is needed rather than speak in general.
+ * "Verify my current email", for a student who is already on a college address.
+ *
+ * Two steps: ask for a code, then enter it. There is no address field, because
+ * there is nothing to choose — the code goes to the address the account already
+ * has, and that address does not change. The server takes the account from the
+ * session and the address from the account; nothing here names either.
+ *
+ * `initialSentAt` lets a student who closed the tab mid-flow come back to the
+ * code step instead of starting over, as long as the code is still alive.
  */
-/** Places that are not a note or the feedback form, so the reason stays general. */
-const GENERIC_DESTINATIONS = ['/', '/home', '/catalog'];
-
-export function purposeOf(nextHref: string) {
-  if (nextHref === '/feedback' || nextHref.startsWith('/feedback?')) {
-    return {
-      reason: 'Verify your MIT-WPU email address to write feedback.',
-      back: 'Taking you back to feedback…',
-    };
-  }
-  if (!GENERIC_DESTINATIONS.includes(nextHref)) {
-    return {
-      reason: 'Verify your MIT-WPU email address to open notes.',
-      back: 'Taking you back to your notes…',
-    };
-  }
-  return {
-    reason: 'Verify your MIT-WPU email address to continue.',
-    back: nextHref === '/' ? 'Taking you back to your notes…' : 'Taking you back…',
-  };
-}
-
-/**
- * Moving an existing account to a verified college address.
- *
- * Two steps in one screen: propose the address, then enter the code sent to it.
- * There is no skip — the account cannot read notes until this is done — but
- * there is also no penalty for stopping: the original address keeps working for
- * signing in, and coming back later resumes from wherever they left off.
- *
- * The step is derived from what the server already knows (`initialPending`), so
- * closing the tab mid-flow and returning lands on the code entry rather than
- * starting over.
- *
- * `nextHref` is where to land once verified — the note they were trying to open,
- * when they arrived from the access dialog. It is validated server-side before
- * it reaches this component.
- *
- * A student who is already on a college address reaches this form from "Wrong
- * address?" — they signed up with a mistyped one. They pass `currentEmail` and
- * `onUseCurrent` so the form can offer the way back, and `description` to say
- * what the form is for in their case. Nothing about the flow differs: the code
- * still goes to the NEW address, and the account only moves once it is proved.
- */
-export function CollegeEmailForm({
-  initialPending,
+export function CurrentEmailForm({
+  email,
+  initialSentAt,
   nextHref = '/',
-  description,
-  currentEmail,
-  onUseCurrent,
+  onUseDifferent,
 }: {
-  initialPending: string | null;
+  email: string;
+  /** When the live code was sent (ISO), if there is one. */
+  initialSentAt: string | null;
   nextHref?: string;
-  /** Replaces the default line under the heading. */
-  description?: string;
-  /** The address the account has now, when it is already a college one. */
-  currentEmail?: string;
-  /** Goes back to verifying `currentEmail` instead of changing it. */
-  onUseCurrent?: () => void;
+  /** For a student who mistyped this address when signing up: change it instead. */
+  onUseDifferent?: () => void;
 }) {
   const router = useRouter();
   const purpose = purposeOf(nextHref);
   const codeRef = useRef<HTMLInputElement>(null);
 
-  const [step, setStep] = useState<'email' | 'code'>(initialPending ? 'code' : 'email');
-  const [email, setEmail] = useState(initialPending ?? '');
+  const [step, setStep] = useState<'send' | 'code'>(initialSentAt ? 'code' : 'send');
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [resending, setResending] = useState(false);
   const [done, setDone] = useState(false);
-  const [cooldown, setCooldown] = useState(initialPending ? RESEND_COOLDOWN_SECONDS : 0);
+  const [cooldown, setCooldown] = useState(0);
+
+  // Worked out after mount, not during render: the server's clock and the
+  // browser's differ, and a countdown rendered from either would not match.
+  useEffect(() => {
+    if (!initialSentAt) return;
+    const elapsed = Math.floor((Date.now() - Date.parse(initialSentAt)) / 1000);
+    setCooldown(Math.max(0, RESEND_COOLDOWN_SECONDS - elapsed));
+  }, [initialSentAt]);
 
   useEffect(() => {
     if (step === 'code') codeRef.current?.focus();
@@ -98,17 +65,12 @@ export function CollegeEmailForm({
     return () => clearInterval(timer);
   }, [cooldown]);
 
-  async function request(event?: React.FormEvent) {
+  async function send(event?: React.FormEvent) {
     event?.preventDefault();
     setError(null);
-    setNotice(null);
     setPending(true);
     try {
-      const response = await fetch('/api/auth/college-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
+      const response = await fetch('/api/auth/verify-current-email', { method: 'POST' });
       const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       if (!response.ok) {
         setError(typeof data.error === 'string' ? data.error : 'Could not send the code.');
@@ -116,7 +78,6 @@ export function CollegeEmailForm({
       }
       setStep('code');
       setCooldown(RESEND_COOLDOWN_SECONDS);
-      setNotice(null);
     } catch {
       setError('We could not reach the server. Check your connection and try again.');
     } finally {
@@ -128,10 +89,9 @@ export function CollegeEmailForm({
   async function confirm(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    setNotice(null);
     setPending(true);
     try {
-      const response = await fetch('/api/auth/college-email', {
+      const response = await fetch('/api/auth/verify-current-email', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code }),
@@ -169,48 +129,37 @@ export function CollegeEmailForm({
     );
   }
 
-  if (step === 'email') {
+  if (step === 'send') {
     return (
-      <form className="space-y-5" onSubmit={request}>
+      <form className="space-y-5" onSubmit={send}>
         <header className="space-y-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">Update your college email</h1>
-          <p className="text-sm text-muted-foreground">{description ?? purpose.reason}</p>
+          <h1 className="text-xl font-semibold tracking-tight">Verify your MIT-WPU email</h1>
+          <p className="text-sm text-muted-foreground">{purpose.reason}</p>
         </header>
 
         {error && <Alert variant="error">{error}</Alert>}
 
-        <div className="space-y-2">
-          <Label htmlFor="collegeEmail">MIT-WPU Email</Label>
-          <Input
-            id="collegeEmail"
-            type="email"
-            required
-            autoComplete="email"
-            autoFocus
-            placeholder="you@mitwpu.edu.in"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            aria-invalid={Boolean(error)}
-            aria-describedby="college-email-hint"
-          />
-          <p id="college-email-hint" className="text-xs text-muted-foreground">
-            Must end in <span className="font-medium text-foreground">@mitwpu.edu.in</span>.
+        <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-3">
+          <p className="text-xs text-muted-foreground">We will send a 6-digit code to</p>
+          <p className="break-all text-sm font-medium">{email}</p>
+          <p className="text-xs text-muted-foreground">
+            This is the address you already sign in with. It will not change.
           </p>
         </div>
 
-        <Button type="submit" className="w-full" size="lg" loading={pending} disabled={!email}>
-          {pending ? 'Sending…' : 'Send verification code'}
+        <Button type="submit" className="w-full" size="lg" loading={pending}>
+          {pending ? 'Sending…' : 'Verify my current email'}
         </Button>
 
-        {onUseCurrent && currentEmail && (
+        {onUseDifferent && (
           <p className="text-center text-sm text-muted-foreground">
-            Actually correct?{' '}
+            Not your address?{' '}
             <button
               type="button"
-              onClick={onUseCurrent}
+              onClick={onUseDifferent}
               className="font-medium text-foreground underline-offset-4 hover:underline"
             >
-              Verify {currentEmail} instead
+              Use a different MIT-WPU email
             </button>
           </p>
         )}
@@ -222,8 +171,6 @@ export function CollegeEmailForm({
     <form className="space-y-5" onSubmit={confirm}>
       <header className="space-y-1.5">
         <h1 className="text-xl font-semibold tracking-tight">Verify your MIT-WPU email</h1>
-        {/* Address, instruction and expiry in one line — everything needed to
-            finish, and nothing else. */}
         <p className="text-sm text-muted-foreground">
           Enter the 6-digit code sent to{' '}
           <span className="break-all font-medium text-foreground">{email}</span>. It expires in 10
@@ -232,13 +179,12 @@ export function CollegeEmailForm({
       </header>
 
       {error && <Alert variant="error">{error}</Alert>}
-      {notice && <Alert variant="info">{notice}</Alert>}
 
       <div className="space-y-2">
-        <Label htmlFor="collegeCode">Verification code</Label>
+        <Label htmlFor="currentCode">Verification code</Label>
         <Input
           ref={codeRef}
-          id="collegeCode"
+          id="currentCode"
           name="code"
           inputMode="numeric"
           autoComplete="one-time-code"
@@ -262,24 +208,22 @@ export function CollegeEmailForm({
           type="button"
           onClick={() => {
             setResending(true);
-            void request();
+            void send();
           }}
           disabled={cooldown > 0 || resending || pending}
           className="font-medium text-foreground underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:font-normal disabled:text-muted-foreground disabled:no-underline"
         >
           {cooldown > 0 ? `Resend code in ${cooldown}s` : resending ? 'Sending…' : 'Resend code'}
         </button>
-        <button
-          type="button"
-          onClick={() => {
-            setStep('email');
-            setCode('');
-            setError(null);
-          }}
-          className="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-        >
-          Use a different address
-        </button>
+        {onUseDifferent && (
+          <button
+            type="button"
+            onClick={onUseDifferent}
+            className="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          >
+            Wrong address?
+          </button>
+        )}
       </div>
     </form>
   );

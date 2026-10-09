@@ -22,6 +22,19 @@ export const OTP_MAX_ATTEMPTS = 5;
 /** How long a student must wait before asking for another code. */
 export const OTP_RESEND_COOLDOWN_SECONDS = 60;
 
+/**
+ * What a code was issued FOR. Codes of one purpose can never be spent on another,
+ * so a sign-up code cannot move an address and an address-change code cannot
+ * verify the current one.
+ */
+export const OTP_PURPOSE = {
+  signUp: 'email_verification',
+  /** Moving an account to a different (college) address. */
+  emailChange: 'email_change',
+  /** Proving control of the address the account already has. */
+  currentEmail: 'current_email',
+} as const;
+
 export type VerifyOutcome =
   | { ok: true }
   | { ok: false; reason: 'no_code' | 'expired' | 'too_many_attempts' | 'mismatch' };
@@ -110,6 +123,18 @@ export async function lastIssuedAt(
  * rather than merely rejecting the guess — otherwise a six-digit secret is one
  * patient script away from being no secret at all. Expiry is checked before
  * the comparison so a stale code can never be spent.
+ *
+ * Both limits hold under parallel requests, not just sequential ones. A plain
+ * "read the row, compare, write the result" lets any number of simultaneous
+ * requests all read the same state: a hundred guesses could each see
+ * `attempts = 0`, and two correct submissions could each find an unconsumed
+ * code. So the two decisions are made by the database, as conditional updates:
+ *
+ *  - an attempt is RESERVED before the code is compared, by an update that only
+ *    matches while `attempts < OTP_MAX_ATTEMPTS` — so at most that many guesses
+ *    are ever evaluated, however they arrive;
+ *  - success is CLAIMED by an update that only matches while `consumedAt` is
+ *    still null — so of any number of correct submissions exactly one wins.
  */
 export async function verifyCode(
   userId: string,
@@ -123,42 +148,51 @@ export async function verifyCode(
 
   if (!token) return { ok: false, reason: 'no_code' };
 
-  if (token.expiresAt <= new Date()) {
-    await prisma.emailVerificationToken.update({
-      where: { id: token.id },
+  const burn = () =>
+    prisma.emailVerificationToken.updateMany({
+      where: { id: token.id, consumedAt: null },
       data: { consumedAt: new Date() },
     });
+
+  if (token.expiresAt <= new Date()) {
+    await burn();
     return { ok: false, reason: 'expired' };
   }
 
-  if (token.attempts >= OTP_MAX_ATTEMPTS) {
-    await prisma.emailVerificationToken.update({
+  // Reserve an attempt, atomically, and learn which attempt this one is. The
+  // statement matches nothing once the allowance is spent or the code has been
+  // consumed by a concurrent request — and says so by returning no row, rather
+  // than by failing.
+  const reserved = await prisma.$queryRaw<{ attempts: number }[]>`
+    UPDATE "email_verification_tokens"
+    SET "attempts" = "attempts" + 1
+    WHERE "id" = ${token.id}
+      AND "consumedAt" IS NULL
+      AND "attempts" < ${OTP_MAX_ATTEMPTS}
+    RETURNING "attempts"
+  `;
+  if (reserved.length !== 1) {
+    const current = await prisma.emailVerificationToken.findUnique({
       where: { id: token.id },
-      data: { consumedAt: new Date() },
+      select: { consumedAt: true },
     });
+    // Consumed while we were reading (a concurrent success or a newer code).
+    if (!current || current.consumedAt) return { ok: false, reason: 'no_code' };
+    await burn();
     return { ok: false, reason: 'too_many_attempts' };
   }
 
   if (!hashesMatch(token.codeHash, hashCode(code))) {
-    const updated = await prisma.emailVerificationToken.update({
-      where: { id: token.id },
-      data: { attempts: { increment: 1 } },
-      select: { attempts: true },
-    });
-    if (updated.attempts >= OTP_MAX_ATTEMPTS) {
-      await prisma.emailVerificationToken.update({
-        where: { id: token.id },
-        data: { consumedAt: new Date() },
-      });
+    if (reserved[0].attempts >= OTP_MAX_ATTEMPTS) {
+      await burn();
       return { ok: false, reason: 'too_many_attempts' };
     }
     return { ok: false, reason: 'mismatch' };
   }
 
-  // Single-use: consumed the moment it succeeds, so a replay finds nothing.
-  await prisma.emailVerificationToken.update({
-    where: { id: token.id },
-    data: { consumedAt: new Date() },
-  });
+  // Single-use: claimed in the same statement that checks it is still unspent,
+  // so a replay — or a simultaneous twin of this request — finds nothing.
+  const claimed = await burn();
+  if (claimed.count !== 1) return { ok: false, reason: 'no_code' };
   return { ok: true };
 }
