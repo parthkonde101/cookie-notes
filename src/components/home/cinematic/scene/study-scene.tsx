@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
@@ -30,6 +30,9 @@ import {
 import { Student } from '@/components/home/cinematic/scene/student';
 import { Book, Clutter, NotePages } from '@/components/home/cinematic/scene/study-items';
 import type { PageSource } from '@/components/home/cinematic/scene/textures';
+
+/** The longest the room waits for the character before it is shown without them. */
+const STUDENT_WAIT_MS = 8000;
 
 const HERO_INDEX = Math.max(
   0,
@@ -225,10 +228,29 @@ function World({ shadows, onReady }: { shadows: boolean; onReady: () => void }) 
     };
   }, [story]);
 
+  // The room is revealed only once the student is in it, so the two fade in
+  // together instead of the character arriving after the furniture. Two frames
+  // are allowed after that, so the shaders and textures of the first full frame
+  // are compiled and uploaded while the stage is still hidden. If the model is
+  // very slow the room appears anyway, and the student joins when ready.
+  const [studentSettled, setStudentSettled] = useState(false);
+  const markStudentSettled = useCallback(() => setStudentSettled(true), []);
+
   useEffect(() => {
-    const id = requestAnimationFrame(onReady);
-    return () => cancelAnimationFrame(id);
-  }, [onReady]);
+    let frame = 0;
+    let timer = 0;
+    const reveal = () => {
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(onReady);
+      });
+    };
+    if (studentSettled) reveal();
+    else timer = window.setTimeout(reveal, STUDENT_WAIT_MS);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [studentSettled, onReady]);
 
   const hero = textures[HERO_INDEX];
 
@@ -242,7 +264,7 @@ function World({ shadows, onReady }: { shadows: boolean; onReady: () => void }) 
       <Chair />
       <Lamp shadows={shadows} />
       <Keepsakes />
-      <Student />
+      <Student onSettled={markStudentSettled} />
       <Laptop page={(hero?.image as PageSource | undefined) ?? null} />
       <Book />
       <Clutter />

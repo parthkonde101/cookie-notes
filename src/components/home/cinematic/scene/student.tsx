@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { CUES, SIT_BACK } from '@/components/home/cinematic/story-config';
 import { lerp, smoothstep, windowed } from '@/components/home/cinematic/math';
 import { useStory } from '@/components/home/cinematic/story-state';
+import { prefetchStudent } from '@/components/home/cinematic/student-asset';
 import { ProceduralStudent } from '@/components/home/cinematic/scene/student-fallback';
 import {
   aim,
@@ -36,7 +37,6 @@ import {
  * so the shoulders, the elbows and the neck all bend the way a body does.
  */
 
-export const STUDENT_MODEL = '/home/student.glb';
 
 /* Where things are in the room (the same numbers the desk, chair and laptop use). */
 const HIPS = new THREE.Vector3(0, -0.27, 0.76);
@@ -99,6 +99,34 @@ function worldSide(bone: THREE.Bone): 1 | -1 {
   return bone.getWorldPosition(new THREE.Vector3()).x >= 0 ? 1 : -1;
 }
 
+/** Reads the downloaded model into a scene graph (not yet posed). */
+function parseStudent(): Promise<GLTF> {
+  return prefetchStudent().then(
+    (data) =>
+      new Promise<GLTF>((resolve, reject) => {
+        const loader = new GLTFLoader();
+        loader.setMeshoptDecoder(MeshoptDecoder);
+        loader.parse(data, '', resolve, reject);
+      }),
+  );
+}
+
+// Reading the model starts the moment this code arrives, while the canvas and
+// the renderer are still being set up, instead of after they are ready. A parsed
+// scene can only be built into one figure, so each is handed out once; any later
+// mount parses afresh.
+let preparsed: Promise<GLTF> | null = null;
+if (typeof window !== 'undefined') {
+  preparsed = parseStudent();
+  preparsed.catch(() => {});
+}
+
+function takeParsedStudent(): Promise<GLTF> {
+  const parsed = preparsed ?? parseStudent();
+  preparsed = null;
+  return parsed;
+}
+
 /** Loads the model and turns it into something that can be posed. */
 function useFigure(): { figure: Figure | null; failed: boolean } {
   const [state, setState] = useState<{ figure: Figure | null; failed: boolean }>({
@@ -109,25 +137,21 @@ function useFigure(): { figure: Figure | null; failed: boolean } {
   useEffect(() => {
     let cancelled = false;
     let built: Figure | null = null;
-    const loader = new GLTFLoader();
-    loader.setMeshoptDecoder(MeshoptDecoder);
+    const fail = () => {
+      if (!cancelled) setState({ figure: null, failed: true });
+    };
 
-    loader.load(
-      STUDENT_MODEL,
-      (gltf) => {
+    takeParsedStudent()
+      .then((gltf) => {
         if (cancelled) return;
         try {
           built = buildFigure(gltf.scene);
           setState({ figure: built, failed: false });
         } catch {
-          setState({ figure: null, failed: true });
+          fail();
         }
-      },
-      undefined,
-      () => {
-        if (!cancelled) setState({ figure: null, failed: true });
-      },
-    );
+      })
+      .catch(fail);
 
     return () => {
       cancelled = true;
@@ -412,8 +436,16 @@ function Seated({ figure }: { figure: Figure }) {
   return <primitive object={figure.scene} />;
 }
 
-export function Student() {
+export function Student({ onSettled }: { onSettled?: () => void }) {
   const { figure, failed } = useFigure();
+  const settled = Boolean(figure) || failed;
+
+  // Tells the scene the character is in place (or has been replaced by the
+  // stand-in), so the room is not shown before the person at the desk.
+  useEffect(() => {
+    if (settled) onSettled?.();
+  }, [settled, onSettled]);
+
   // If the model cannot load, the room still has someone at the desk.
   if (failed) return <ProceduralStudent />;
   if (!figure) return null;

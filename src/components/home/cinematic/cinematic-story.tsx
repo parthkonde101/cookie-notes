@@ -13,6 +13,7 @@ import {
   SMOOTH_TIME,
 } from '@/components/home/cinematic/story-config';
 import { createStoryState, type StoryState } from '@/components/home/cinematic/story-state';
+import { prefetchStudent } from '@/components/home/cinematic/student-asset';
 import { easeInOutCubic, glideDuration, pickStop } from '@/components/home/cinematic/settle';
 
 // The 3D scene (and Three.js with it) is a separate chunk, fetched after the
@@ -76,7 +77,11 @@ export function CinematicStory() {
 
   useEffect(() => {
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    setPhase(reduced || !canRunWebGL() ? 'fallback' : 'scene');
+    const runs = !reduced && canRunWebGL();
+    // Start fetching the character now, in parallel with the 3D code, rather
+    // than after that code has arrived.
+    if (runs) prefetchStudent().catch(() => {});
+    setPhase(runs ? 'scene' : 'fallback');
   }, []);
 
   // Scroll → progress. Runs only while the stage is on screen.
@@ -276,7 +281,7 @@ export function CinematicStory() {
         >
           {phase === 'scene' && (
             <div
-              className={`absolute inset-0 transition-opacity duration-1000 ${
+              className={`absolute inset-0 transition-opacity duration-700 ${
                 ready ? 'opacity-100' : 'opacity-0'
               }`}
             >
