@@ -2,11 +2,11 @@ import type { Metadata } from 'next';
 import Image from 'next/image';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ArrowLeft, ArrowRight, FileText, Layers } from 'lucide-react';
+import { ArrowLeft, ArrowRight, FileText } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/feedback';
 import { NoteCard, type CardAccessState } from '@/components/catalog/note-card';
-import { UnitCard } from '@/components/catalog/unit-card';
+import { UnitRow } from '@/components/catalog/unit-card';
 import { ProgramMemory } from '@/components/catalog/program-memory';
 import { subjectCatalog, subscribedUnitIds, type CatalogNote } from '@/lib/catalog';
 import { PROGRAM_PARAM, programLabel, stripProgramPrefix } from '@/lib/program';
@@ -37,8 +37,9 @@ export async function generateMetadata({
  * cover sits in the header so the object is continuous, then the contents —
  * units, then past papers.
  *
- * One unit is one PDF, so a unit is a card you open rather than a heading with
- * files under it. Past papers keep their own shape — a subject's papers belong
+ * One unit is one PDF, so a unit is a line in the table of contents that you
+ * open rather than a heading with files under it. A subject has only a handful
+ * of units, so they are a numbered list, not a grid. Past papers keep their own shape — a subject's papers belong
  * to the subject as a whole, not to any unit — and are listed latest year first.
  *
  * Public: the structure is visible to anyone. Only the action on each card
@@ -188,14 +189,21 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
 
           {subject.units.length > 0 && (
             <section>
-              <SectionHeading>Units</SectionHeading>
-              {/* Same fluid grid as the shelf: the column count follows the
-                  space available, and the `min(…,100%)` floor is what stops a
-                  track wider than its container from scrolling the page
-                  sideways on a narrow phone. */}
-              <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(min(15rem,100%),1fr))] gap-3">
+              <SectionHeading
+                aside={
+                  <UnitProgress
+                    ready={subject.units.filter((unit) => unit.note !== null).length}
+                    total={subject.units.length}
+                    states={subject.units.map((unit) => unit.note !== null)}
+                  />
+                }
+              >
+                Units
+              </SectionHeading>
+              {/* One ruled surface, like the contents page of a book. */}
+              <ol className="mt-4 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
                 {subject.units.map((unit) => (
-                  <UnitCard
+                  <UnitRow
                     key={unit.id}
                     unitId={unit.id}
                     index={unit.index}
@@ -215,19 +223,43 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
                     }
                   />
                 ))}
-              </div>
+              </ol>
             </section>
           )}
 
           {subject.pyqs.length > 0 && (
             <section>
-              <SectionHeading>Previous Year Questions</SectionHeading>
-              {/* Latest year first — ordered in the query, not here. */}
-              <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(min(11rem,100%),1fr))] gap-3">
-                {subject.pyqs.map((pyq) => (
-                  <PyqCard key={pyq.id} id={pyq.id} year={pyq.year} label={pyq.label} />
+              <SectionHeading
+                aside={
+                  <span className="text-xs text-muted-foreground">
+                    {subject.pyqs.length} {subject.pyqs.length === 1 ? 'paper' : 'papers'} · latest
+                    first
+                  </span>
+                }
+              >
+                Previous Year Questions
+              </SectionHeading>
+              {/* Latest year first — ordered in the query, not here. Two columns
+                  from `md`; the 1px gap over a ruled background draws the lines
+                  between papers, and a filler cell keeps an odd count tidy. */}
+              <ul
+                className={`mt-4 grid gap-px overflow-hidden rounded-xl border border-border bg-border ${
+                  subject.pyqs.length > 1 ? 'md:grid-cols-2' : ''
+                }`}
+              >
+                {subject.pyqs.map((pyq, position) => (
+                  <PyqRow
+                    key={pyq.id}
+                    id={pyq.id}
+                    year={pyq.year}
+                    label={pyq.label}
+                    latest={position === 0}
+                  />
                 ))}
-              </div>
+                {subject.pyqs.length > 1 && subject.pyqs.length % 2 === 1 && (
+                  <li aria-hidden className="hidden bg-card md:block" />
+                )}
+              </ul>
             </section>
           )}
         </div>
@@ -236,36 +268,109 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
   );
 }
 
-function SectionHeading({ children }: { children: React.ReactNode }) {
+function SectionHeading({
+  children,
+  aside,
+}: {
+  children: React.ReactNode;
+  aside?: React.ReactNode;
+}) {
   return (
     <div className="flex items-center gap-3">
       <h2 className="text-base font-semibold tracking-tight">{children}</h2>
       <span aria-hidden className="h-px flex-1 bg-border" />
+      {aside}
     </div>
   );
 }
 
-/** One year's paper. The whole card is the link, so it is one tab stop. */
-function PyqCard({ id, year, label }: { id: string; year: number; label: string | null }) {
+/**
+ * How much of the notebook is ready, as one segment per unit. A subject has
+ * five units, so five segments read at a glance: filled for a unit with its
+ * notes, outlined for one still to come.
+ */
+function UnitProgress({
+  ready,
+  total,
+  states,
+}: {
+  ready: number;
+  total: number;
+  states: boolean[];
+}) {
   return (
-    <Link
-      href={`/pyqs/${id}`}
-      aria-label={`Open the ${year} previous year paper${label ? ` (${label})` : ''}`}
-      className="surface-interactive group flex min-w-0 flex-col gap-1 p-3.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xl font-semibold tabular-nums tracking-tight transition-colors group-hover:text-primary">
+    <div className="flex items-center gap-2.5">
+      <span className="text-xs text-muted-foreground">
+        <span className="font-medium tabular-nums text-foreground">{ready}</span> of {total} ready
+      </span>
+      <span aria-hidden className="flex items-center gap-1">
+        {states.map((isReady, position) => (
+          <span
+            key={position}
+            className={
+              isReady
+                ? 'h-1.5 w-5 rounded-full bg-primary'
+                : 'h-1.5 w-5 rounded-full border border-border bg-transparent'
+            }
+          />
+        ))}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * One year's paper, as a line in the ledger of past papers: the year stamped on
+ * the left, what it is in the middle, and the way in on the right. The whole
+ * row is the link, so it is one tab stop.
+ */
+function PyqRow({
+  id,
+  year,
+  label,
+  latest,
+}: {
+  id: string;
+  year: number;
+  label: string | null;
+  latest: boolean;
+}) {
+  return (
+    <li className="bg-card">
+      <Link
+        href={`/pyqs/${id}`}
+        aria-label={`Open the ${year} previous year paper${label ? ` (${label})` : ''}`}
+        className="group relative flex items-center gap-4 px-4 py-4 transition-colors hover:bg-accent/25 focus-visible:bg-accent/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-5"
+      >
+        <span
+          aria-hidden
+          className="flex h-11 w-[4.25rem] shrink-0 items-center justify-center rounded-md border border-border bg-background/60 font-mono text-[1.05rem] font-semibold tabular-nums tracking-tight transition-colors group-hover:border-primary/50 group-hover:text-primary"
+        >
           {year}
         </span>
-        <Layers aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-      </div>
-      <p className="truncate text-xs text-muted-foreground">
-        {label ?? 'Previous year paper'}
-      </p>
-      <span className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors group-hover:text-primary">
-        Open
-        <ArrowRight aria-hidden className="size-3 transition-transform group-hover:translate-x-0.5" />
-      </span>
-    </Link>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <p className="truncate text-sm font-medium transition-colors group-hover:text-primary">
+              {label ?? 'Question paper'}
+            </p>
+            {latest && (
+              <span className="shrink-0 rounded-full bg-primary/12 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wider text-primary">
+                Latest
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">Previous year paper</p>
+        </div>
+
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium text-muted-foreground transition-colors group-hover:border-primary/50 group-hover:bg-primary/10 group-hover:text-primary">
+          Open
+          <ArrowRight
+            aria-hidden
+            className="size-3 transition-transform group-hover:translate-x-0.5"
+          />
+        </span>
+      </Link>
+    </li>
   );
 }

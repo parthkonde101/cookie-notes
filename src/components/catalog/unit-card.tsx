@@ -8,7 +8,7 @@ import { type CardAccessState } from '@/components/catalog/note-card';
 import { BakingCookie, NotifyMeButton } from '@/components/catalog/baking';
 import { cn } from '@/lib/utils';
 
-export interface UnitCardProps {
+export interface UnitRowProps {
   /** 1-based position in the notebook — the "3" in "Unit 3". */
   index: number;
   name: string;
@@ -24,29 +24,49 @@ export interface UnitCardProps {
 }
 
 /**
- * A unit, in one of its three states.
+ * Unit titles are often stored as "Unit 3 - Network Layer" or "Unit 3: Network
+ * Layer". The row already shows the number, so repeating it in the title would
+ * read "03 · Unit 3 · Unit 3 - Network Layer". Only a leading label that matches
+ * this unit's own position is removed; anything else is left exactly as written.
+ */
+export function unitTitle(name: string, index: number): string {
+  const stripped = name.replace(/^\s*unit\s*(\d+)\s*[:.)\-–—]?\s*/i, (whole, digits: string) =>
+    Number(digits) === index ? '' : whole,
+  );
+  return stripped.trim() || name;
+}
+
+/**
+ * One unit, as a line in the notebook's table of contents.
  *
- *   PDF uploaded        → a normal card you open
+ * A subject has a handful of units, read in order, so they are a numbered list
+ * rather than a grid of cards: a large zero-padded numeral, the unit's title,
+ * and on the right the one thing you can do with it. The rows share a single
+ * ruled surface, like the contents page of a book.
+ *
+ * A unit is in one of three states:
+ *
+ *   PDF uploaded        → a row you open
  *   no PDF, baking      → "Being Baked", with a reminder you can ask for
  *   no PDF, not baking  → "Not uploaded yet", inert
  *
  * One unit is one PDF, so the unit is the thing you open — there is no note
- * listed underneath it and no intermediate page. Clicking the card goes straight
- * to the reader. That is also why the card carries no file name, page count or
+ * listed underneath it and no intermediate page. Clicking the row goes straight
+ * to the reader. That is also why the row carries no file name, page count or
  * upload date: none of it helps a student choose a unit, and all of it would
- * make the card look like a file browser.
+ * make the list look like a file browser.
  *
  * A unit with nothing uploaded is still shown, so the notebook reads as complete
  * and a student can see what is still to come rather than wondering whether a
  * unit exists at all.
  *
  * Access is not decided here. `access` is a display hint computed on the server;
- * opening the note still runs the full authorisation chain. The card is a real
+ * opening the note still runs the full authorisation chain. The row is a real
  * link so it can be opened in a new tab like any other, and a visitor who is not
  * signed in gets the sign-in modal instead of a redirect they have to come back
  * from.
  */
-export function UnitCard({
+export function UnitRow({
   index,
   name,
   description,
@@ -54,7 +74,7 @@ export function UnitCard({
   unitId,
   beingBaked = false,
   subscribed = false,
-}: UnitCardProps) {
+}: UnitRowProps) {
   const { requestAuth } = useAuthModal();
   const { allowNoteOpen } = useVerificationGate();
 
@@ -65,6 +85,7 @@ export function UnitCard({
   const baking = !note && beingBaked;
   const inert = !openable && !baking;
   const href = note ? `/notes/${note.id}` : '#';
+  const title = unitTitle(name, index);
 
   function onClick(event: React.MouseEvent) {
     if (!note) return;
@@ -83,96 +104,109 @@ export function UnitCard({
   }
 
   return (
-    <article
+    <li
       className={cn(
-        'surface-interactive group relative flex h-full min-w-0 flex-col p-4',
-        'focus-within:border-primary/50',
-        inert && 'opacity-70 hover:border-border hover:shadow-none',
-        // Warm, not loud: a hint of the brand brown so a baking unit reads as
-        // "coming" rather than "broken", without competing with a real card.
-        baking && 'border-primary/30 bg-primary/[0.04] hover:border-primary/45',
+        'group relative flex flex-col gap-3 px-4 py-4 transition-colors sm:flex-row sm:items-center sm:gap-5 sm:px-5',
+        'focus-within:bg-accent/25',
+        openable && 'hover:bg-accent/25',
+        baking && 'bg-primary/[0.04]',
       )}
     >
-      <div className="flex items-start gap-3">
+      {/* A warm edge that appears on the row you are about to open. */}
+      {openable && (
+        <span
+          aria-hidden
+          className="absolute inset-y-3 left-0 w-0.5 rounded-full bg-primary opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+        />
+      )}
+
+      <div className="flex min-w-0 flex-1 items-start gap-4 sm:items-center sm:gap-5">
         <span
           aria-hidden
           className={cn(
-            'mt-0.5 flex size-7 shrink-0 items-center justify-center rounded font-mono text-xs font-semibold',
-            inert ? 'bg-muted text-muted-foreground' : 'bg-primary/20 text-primary',
+            'w-9 shrink-0 text-right font-mono text-2xl font-semibold leading-none tabular-nums tracking-tight transition-colors sm:w-11 sm:text-[1.75rem]',
+            inert ? 'text-muted-foreground/40' : 'text-primary/55 group-hover:text-primary',
           )}
         >
-          {index}
+          {String(index).padStart(2, '0')}
         </span>
 
         <div className="min-w-0 flex-1">
-          <h3 className="text-pretty text-[0.95rem] font-medium leading-snug">
+          <p
+            className={cn(
+              'text-[0.68rem] font-medium uppercase tracking-[0.14em]',
+              inert ? 'text-muted-foreground/60' : 'text-muted-foreground',
+            )}
+          >
+            Unit {index}
+          </p>
+          <h3
+            className={cn(
+              'mt-0.5 text-pretty text-base font-medium leading-snug',
+              inert && 'text-muted-foreground',
+            )}
+          >
             {openable ? (
               <Link
                 href={href}
                 onClick={onClick}
-                // The pseudo-element makes the whole card clickable while
+                // The pseudo-element makes the whole row clickable while
                 // keeping exactly one tab stop and one accessible name.
                 className="text-left outline-none transition-colors after:absolute after:inset-0 group-hover:text-primary focus-visible:text-primary"
               >
                 <span className="sr-only">Unit {index}: </span>
-                {name}
+                {title}
               </Link>
             ) : (
               <span className="text-left">
                 <span className="sr-only">Unit {index}: </span>
-                {name}
+                {title}
               </span>
             )}
           </h3>
           {description && (
-            <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+            <p className="mt-1 line-clamp-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
               {description}
             </p>
           )}
         </div>
       </div>
 
-      {/* Being Baked. The cookie is decorative; the words carry the state, so
-          nothing here depends on the animation being seen or running. */}
-      {baking && (
-        <div className="mt-3 flex items-center gap-2.5">
-          <BakingCookie />
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-primary">Being Baked</p>
-            <p className="text-xs leading-snug text-muted-foreground">
-              Fresh notes are on the way…
-            </p>
-          </div>
-        </div>
-      )}
-
-      <div
-        className={cn(
-          'mt-auto flex flex-wrap items-center gap-2 pt-4',
-          baking ? 'justify-start' : 'justify-end',
-        )}
-      >
+      {/* The one thing you can do with this unit. Aligned under the title on a
+          phone, to the right of the row from `sm` up. */}
+      <div className="flex items-center gap-3 pl-[3.25rem] sm:shrink-0 sm:justify-end sm:pl-0">
         {baking ? (
-          <NotifyMeButton
-            unitId={unitId}
-            unitLabel={`Unit ${index} — ${name}`}
-            subscribed={subscribed}
-          />
+          // Being Baked. The cookie is decorative; the words carry the state, so
+          // nothing here depends on the animation being seen or running.
+          <>
+            <div className="flex items-center gap-2">
+              <BakingCookie />
+              <p className="text-sm font-medium text-primary">Being baked</p>
+            </div>
+            <NotifyMeButton
+              unitId={unitId}
+              unitLabel={`Unit ${index} — ${title}`}
+              subscribed={subscribed}
+            />
+          </>
         ) : note === null ? (
-          <span className="rounded-md border border-dashed border-border px-2.5 py-1 text-xs text-muted-foreground">
+          <span className="rounded-full border border-dashed border-border px-3 py-1 text-xs text-muted-foreground">
             Not uploaded yet
           </span>
         ) : access?.kind === 'unavailable' ? (
-          <span className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground">
+          <span className="rounded-full border border-border px-3 py-1 text-xs text-muted-foreground">
             Unavailable
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors group-hover:text-primary">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium text-muted-foreground transition-colors group-hover:border-primary/50 group-hover:bg-primary/10 group-hover:text-primary">
             Open
-            <ArrowRight aria-hidden className="size-3 transition-transform group-hover:translate-x-0.5" />
+            <ArrowRight
+              aria-hidden
+              className="size-3 transition-transform group-hover:translate-x-0.5"
+            />
           </span>
         )}
       </div>
-    </article>
+    </li>
   );
 }

@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { ChevronDown, Cookie, LogOut, Menu, Shield, UserRound, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuthModal } from '@/components/auth/auth-modal';
+import { useVerificationGate } from '@/components/auth/verification-gate';
 import { cn, initials } from '@/lib/utils';
 
 export interface HeaderUser {
@@ -48,6 +49,7 @@ export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveU
   const router = useRouter();
   const pathname = usePathname();
   const { requestAuth } = useAuthModal();
+  const { allowNoteOpen } = useVerificationGate();
   const [menuOpen, setMenuOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
@@ -80,6 +82,19 @@ export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveU
   useEffect(() => {
     setNavOpen(false);
   }, [pathname]);
+
+  /**
+   * Writing feedback needs a verified college email, like opening a note. An
+   * unverified student gets the same explanation here instead of being bounced
+   * to another screen; the page and its API enforce it regardless.
+   */
+  function onNavClick(href: string, event: React.MouseEvent) {
+    if (href !== '/feedback') return;
+    if (!allowNoteOpen(href, 'feedback')) {
+      event.preventDefault();
+      setNavOpen(false);
+    }
+  }
 
   async function signOut() {
     setSigningOut(true);
@@ -115,6 +130,7 @@ export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveU
               <Link
                 key={link.href}
                 href={link.href}
+                onClick={(event) => onNavClick(link.href, event)}
                 aria-current={active ? 'page' : undefined}
                 className={cn(
                   'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
@@ -154,6 +170,7 @@ export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveU
                   <Link
                     key={link.href}
                     href={link.href}
+                    onClick={(event) => onNavClick(link.href, event)}
                     role="menuitem"
                     aria-current={active ? 'page' : undefined}
                     className={cn(

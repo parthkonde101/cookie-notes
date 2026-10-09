@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Cookie, Loader2, MonitorSmartphone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { Alert } from '@/components/ui/feedback';
 import { RegisterForm } from '@/components/auth/register-form';
@@ -245,9 +246,8 @@ export function AuthModalProvider({ children }: { children: React.ReactNode }) {
 
                   <div className="space-y-2">
                     <Label htmlFor="auth-password">Password</Label>
-                    <Input
+                    <PasswordInput
                       id="auth-password"
-                      type="password"
                       autoComplete="current-password"
                       required
                       value={password}

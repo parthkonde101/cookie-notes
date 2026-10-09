@@ -3,7 +3,6 @@ import { AuthModalProvider } from '@/components/auth/auth-modal';
 import { VerificationGateProvider } from '@/components/auth/verification-gate';
 import { SiteHeader } from '@/components/layout/site-header';
 import { SessionHeartbeat } from '@/components/session/heartbeat';
-import { MailWarning } from 'lucide-react';
 import { EMAIL_MIGRATION_PATH, needsEmailMigration, optionalUser } from '@/lib/auth/guards';
 import { countLiveUsers } from '@/lib/auth/session';
 
@@ -19,13 +18,13 @@ export const dynamic = 'force-dynamic';
 export default async function PublicLayout({ children }: { children: React.ReactNode }) {
   const auth = await optionalUser();
   const liveUsers = auth ? await countLiveUsers() : undefined;
-  // Browsing the catalogue stays public and ungated — it always was. But a
-  // student who is signed in and cannot yet open anything deserves to know why
-  // before they click a unit, and to be told at the moment they click it.
+  // Browsing the catalogue stays public and ungated — it always was. A student
+  // who is signed in but unverified is told why at the moment they try to open
+  // a note or write feedback, in words that match what they tried.
   //
-  // Both the banner and the dialog read this one value, which comes from the
-  // same helper the server guards use, so what the catalogue says and what the
-  // reader enforces cannot drift apart.
+  // The dialog reads this one value, which comes from the same helper the
+  // server guards use, so what the pages say and what the guards enforce cannot
+  // drift apart.
   const mustVerify = auth ? needsEmailMigration(auth.user) : false;
 
   return (
@@ -43,49 +42,11 @@ export default async function PublicLayout({ children }: { children: React.React
             liveUsers={liveUsers}
           />
 
-          {mustVerify && (
-            <div className="border-b border-warning/30 bg-warning/10">
-              <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 text-sm sm:px-6">
-                <MailWarning aria-hidden className="size-4 shrink-0 text-warning" />
-                <p className="min-w-0 flex-1 text-foreground/90">
-                  Verify your MIT-WPU email to open notes again.
-                </p>
-                <Link
-                  href={EMAIL_MIGRATION_PATH}
-                  className="shrink-0 font-medium text-foreground underline underline-offset-4"
-                >
-                  Verify now
-                </Link>
-              </div>
-            </div>
-          )}
-
           <main className="flex-1">{children}</main>
 
           <footer className="border-t border-border">
             <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-4 py-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
               <p>© {new Date().getFullYear()} Cookie Notes</p>
-              <p>
-                Home page character: “Rigged Anime School Boy” by{' '}
-                <a
-                  href="https://sketchfab.com/3d-models/rigged-anime-school-boy-animation-included-288cb16deac54a3c95697a4e2290b499"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline-offset-4 hover:text-foreground hover:underline"
-                >
-                  suzuart
-                </a>{' '}
-                (
-                <a
-                  href="https://creativecommons.org/licenses/by/4.0/"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline-offset-4 hover:text-foreground hover:underline"
-                >
-                  CC BY 4.0
-                </a>
-                ), modified for the web
-              </p>
               {auth && (
                 <p>
                   <Link

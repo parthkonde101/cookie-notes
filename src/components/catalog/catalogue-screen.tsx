@@ -14,7 +14,8 @@ import {
   resolveProgram,
   stripProgramPrefix,
 } from '@/lib/program';
-import { optionalUser } from '@/lib/auth/guards';
+import { VerifyBanner } from '@/components/auth/verify-banner';
+import { needsEmailMigration, optionalUser } from '@/lib/auth/guards';
 import { recordEvent } from '@/lib/analytics/events';
 import { requestContext } from '@/lib/request';
 
@@ -140,6 +141,9 @@ export async function CatalogueScreen({
 
   return (
     <>
+      {/* A signed-in student who has not verified a college email is reminded here, and only here. */}
+      {auth && needsEmailMigration(auth.user) && <VerifyBanner />}
+
       {/*
        * Hero — the name and the line, centred over the glow.
        *
@@ -194,7 +198,7 @@ export async function CatalogueScreen({
                 className="animate-catalog-enter motion-reduce:animate-none"
                 icon={Library}
                 title={`${programLabel(program)} notes are being prepared`}
-                description="Nothing is on this shelf yet. Try the other programme above, or create an account so you are ready when these land."
+                description="Nothing is on this shelf yet."
               />
             ) : (
               <div className="space-y-14">

@@ -30,8 +30,8 @@ import {
 /**
  * A college student in a blazer, working at a laptop.
  *
- * The character is a real modelled-and-rigged asset (see public/home/student.glb,
- * credit in the site footer), posed from code on every frame: seated with the
+ * The character is a real modelled-and-rigged asset (public/home/student.glb,
+ * "Rigged Anime School Boy" by suzuart, CC BY 4.0), posed from code on every frame: seated with the
  * hips on the chair, the spine leaning to the screen, the hands on the keys, the
  * head turning to whatever the camera is looking at. The skeleton does the work,
  * so the shoulders, the elbows and the neck all bend the way a body does.

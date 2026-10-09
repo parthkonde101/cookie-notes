@@ -27,15 +27,23 @@ import {
  * so the dialog and the gate can never disagree about who is unverified.
  */
 
+/** What the student was trying to do, so the dialog can say so. */
+export type GatedAction = 'notes' | 'feedback';
+
+const ACTION_COPY: Record<GatedAction, string> = {
+  notes: 'Verify your MIT-WPU email address to open notes.',
+  feedback: 'Verify your MIT-WPU email address to write feedback.',
+};
+
 interface VerificationGateState {
   /**
    * Ask permission to open `href`.
    *
    * Returns true when the student may proceed and the caller should navigate.
    * Returns false when the dialog has been raised instead — the caller must not
-   * navigate.
+   * navigate. `action` only changes the wording; it never changes who is let in.
    */
-  allowNoteOpen: (href: string) => boolean;
+  allowNoteOpen: (href: string, action?: GatedAction) => boolean;
 }
 
 const VerificationGateContext = createContext<VerificationGateState>({
@@ -59,12 +67,12 @@ export function VerificationGateProvider({
   children: React.ReactNode;
 }) {
   const router = useRouter();
-  const [pendingHref, setPendingHref] = useState<string | null>(null);
+  const [pending, setPending] = useState<{ href: string; action: GatedAction } | null>(null);
 
   const allowNoteOpen = useCallback(
-    (href: string) => {
+    (href: string, action: GatedAction = 'notes') => {
       if (!mustVerify) return true;
-      setPendingHref(href);
+      setPending({ href, action });
       return false;
     },
     [mustVerify],
@@ -76,28 +84,26 @@ export function VerificationGateProvider({
     <VerificationGateContext.Provider value={value}>
       {children}
 
-      <Dialog open={pendingHref !== null} onOpenChange={(open) => !open && setPendingHref(null)}>
+      <Dialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <div className="mb-1 flex size-9 items-center justify-center rounded-full bg-warning/12 text-warning">
               <MailWarning className="size-4" aria-hidden />
             </div>
             <DialogTitle>Verify your email</DialogTitle>
-            <DialogDescription>
-              Verify your MIT-WPU email address to open notes.
-            </DialogDescription>
+            <DialogDescription>{ACTION_COPY[pending?.action ?? 'notes']}</DialogDescription>
           </DialogHeader>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setPendingHref(null)}>
+            <Button variant="outline" onClick={() => setPending(null)}>
               Cancel
             </Button>
             <Button
               onClick={() => {
-                // Carry the note along so verifying lands back on it rather
-                // than on the catalogue.
-                const next = pendingHref;
-                setPendingHref(null);
+                // Carry the destination along so verifying lands back on it
+                // rather than on the catalogue.
+                const next = pending?.href ?? null;
+                setPending(null);
                 router.push(
                   next && next !== '#'
                     ? `${verifyPath}?next=${encodeURIComponent(next)}`

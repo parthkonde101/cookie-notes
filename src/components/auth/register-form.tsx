@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Check, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { Alert } from '@/components/ui/feedback';
 import { cn } from '@/lib/utils';
@@ -120,9 +121,8 @@ export function RegisterForm() {
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="password">Password</Label>
-          <Input
+          <PasswordInput
             id="password"
-            type="password"
             required
             autoComplete="new-password"
             value={form.password}
@@ -131,9 +131,8 @@ export function RegisterForm() {
         </div>
         <div className="space-y-2">
           <Label htmlFor="confirmPassword">Confirm password</Label>
-          <Input
+          <PasswordInput
             id="confirmPassword"
-            type="password"
             required
             autoComplete="new-password"
             value={form.confirmPassword}

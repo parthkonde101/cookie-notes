@@ -11,6 +11,32 @@ import { Alert } from '@/components/ui/feedback';
 const RESEND_COOLDOWN_SECONDS = 60;
 
 /**
+ * What the student came here to do, taken from where they will land afterwards,
+ * so the screen can say why verification is needed rather than speak in general.
+ */
+/** Places that are not a note or the feedback form, so the reason stays general. */
+const GENERIC_DESTINATIONS = ['/', '/home', '/catalog'];
+
+function purposeOf(nextHref: string) {
+  if (nextHref === '/feedback' || nextHref.startsWith('/feedback?')) {
+    return {
+      reason: 'Verify your MIT-WPU email address to write feedback.',
+      back: 'Taking you back to feedback…',
+    };
+  }
+  if (!GENERIC_DESTINATIONS.includes(nextHref)) {
+    return {
+      reason: 'Verify your MIT-WPU email address to open notes.',
+      back: 'Taking you back to your notes…',
+    };
+  }
+  return {
+    reason: 'Verify your MIT-WPU email address to continue.',
+    back: nextHref === '/' ? 'Taking you back to your notes…' : 'Taking you back…',
+  };
+}
+
+/**
  * Moving an existing account to a verified college address.
  *
  * Two steps in one screen: propose the address, then enter the code sent to it.
@@ -34,6 +60,7 @@ export function CollegeEmailForm({
   nextHref?: string;
 }) {
   const router = useRouter();
+  const purpose = purposeOf(nextHref);
   const codeRef = useRef<HTMLInputElement>(null);
 
   const [step, setStep] = useState<'email' | 'code'>(initialPending ? 'code' : 'email');
@@ -121,7 +148,7 @@ export function CollegeEmailForm({
         <CheckCircle2 className="size-8 text-success" aria-hidden />
         <div>
           <p className="font-medium">Email verified</p>
-          <p className="mt-1 text-sm text-muted-foreground">Taking you back to your notes…</p>
+          <p className="mt-1 text-sm text-muted-foreground">{purpose.back}</p>
         </div>
       </div>
     );
@@ -132,9 +159,7 @@ export function CollegeEmailForm({
       <form className="space-y-5" onSubmit={request}>
         <header className="space-y-1.5">
           <h1 className="text-xl font-semibold tracking-tight">Update your college email</h1>
-          <p className="text-sm text-muted-foreground">
-            Verify your MIT-WPU email address to continue.
-          </p>
+          <p className="text-sm text-muted-foreground">{purpose.reason}</p>
         </header>
 
         {error && <Alert variant="error">{error}</Alert>}
