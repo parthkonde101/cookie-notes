@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/feedback';
+import { LoadingMessage } from '@/components/notes/loading-message';
 import { MAX_PAGE_WIDTH, PdfPage } from '@/components/notes/pdf-page';
 import { watermarkCaption, type WatermarkIdentity } from '@/components/notes/watermark';
 import { cn } from '@/lib/utils';
@@ -514,7 +515,7 @@ export function NoteViewer({
         {status === 'loading' && (
           <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted-foreground">
             <Loader2 className="size-6 animate-spin" />
-            <p className="text-sm">Preparing your copy…</p>
+            <LoadingMessage />
           </div>
         )}
 
