@@ -129,9 +129,17 @@
   html {
     -webkit-text-size-adjust: 100%;
     scroll-behavior: smooth;
+    /* The page never scrolls or widens sideways. `clip` rather than `hidden`
+       so the sticky header keeps working. A phone browser widens (and zooms
+       out) the whole page to fit anything that overflows, so nothing is allowed
+       to. Content that really is wider scrolls inside its own container. */
+    overflow-x: clip;
+    /* No double-tap zoom. */
+    touch-action: manipulation;
   }
 
   body {
+    overflow-x: clip;
     @apply bg-background text-foreground antialiased;
     font-family: var(--font-sans);
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
@@ -316,5 +324,17 @@
     font-family: var(--font-sans);
     color: #111;
     text-align: center;
+  }
+}
+
+/* iOS Safari zooms into any text field whose font is under 16px when it is
+   focused, and does not zoom back out. On touch screens every text-entry
+   control is therefore at least 16px. The viewport is also locked (see the root
+   layout); this keeps working in browsers that ignore that. */
+@media (pointer: coarse) {
+  input:not([type='checkbox'], [type='radio'], [type='range'], [type='file'], [type='button'], [type='submit'], [type='reset'], [type='hidden']),
+  select,
+  textarea {
+    font-size: 16px !important;
   }
 }

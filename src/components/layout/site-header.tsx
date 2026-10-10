@@ -162,7 +162,11 @@ export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveU
           {navOpen && (
             <div
               role="menu"
-              className="absolute left-0 top-[calc(100%+0.4rem)] w-48 overflow-hidden rounded-md border border-border bg-popover py-1 shadow-xl animate-fade-in"
+              // Anchored to the button's RIGHT edge so it opens leftwards, into the
+              // page. The button sits near the right of the header, so a menu that
+              // opened rightwards ran past the screen edge and made the browser
+              // widen — and zoom out — the whole page to fit it.
+              className="absolute right-0 top-[calc(100%+0.4rem)] w-48 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-border bg-popover py-1 shadow-xl animate-fade-in"
             >
               {NAV_LINKS.map((link) => {
                 const active = isNavLinkActive(link.href, pathname, Boolean(user));

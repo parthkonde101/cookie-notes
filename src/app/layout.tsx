@@ -27,8 +27,12 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   themeColor: '#0f0d0a',
   width: 'device-width',
+  // The page is laid out for the device width and stays at that scale: no zoom
+  // in when a field is focused, and no zoom out to fit something that overflows.
   initialScale: 1,
-  maximumScale: 5,
+  minimumScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
