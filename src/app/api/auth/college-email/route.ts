@@ -62,6 +62,11 @@ class AddressUnavailable extends Error {}
 /** Propose a college address and send a code to it. */
 export async function POST(request: NextRequest) {
   try {
+    // Institutional verification is switched off (EMAIL_VERIFICATION_REQUIRED): this
+    // endpoint does not exist. Checked first, so nothing is read, no mail is sent
+    // and no verification record is touched.
+    if (!env.verification.required) throw Errors.notFound();
+
     const { user } = await requireApiUser({ allowUnverified: true });
     const ctx = contextFromHeaders(request.headers);
 
@@ -176,6 +181,11 @@ export async function POST(request: NextRequest) {
  */
 export async function PUT(request: NextRequest) {
   try {
+    // Institutional verification is switched off (EMAIL_VERIFICATION_REQUIRED): this
+    // endpoint does not exist. Checked first, so nothing is read, no mail is sent
+    // and no verification record is touched.
+    if (!env.verification.required) throw Errors.notFound();
+
     const { user, session } = await requireApiUser({ allowUnverified: true });
     const ctx = contextFromHeaders(request.headers);
 

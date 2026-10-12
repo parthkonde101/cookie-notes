@@ -70,7 +70,8 @@ export interface PdfPageProps {
    * watermark, which sizes itself from the canvas it is given, scales with it.
    */
   zoom: number;
-  identity: WatermarkIdentity;
+  /** The mark to burn in, or null for none (watermarks off). */
+  identity: WatermarkIdentity | null;
   /** Lazy rendering: only pages near the viewport paint. */
   shouldRender: boolean;
   /** Lets the viewer wait for in-flight work before destroying the document. */
@@ -173,7 +174,7 @@ export function PdfPage({
         // page has finished painting so nothing can render over it. It sizes
         // itself from the canvas it is given, so a resolution stepped back for
         // Safari's limit produces the same mark in the same place.
-        drawWatermark(ctx, pixelWidth, pixelHeight, identity);
+        if (identity) drawWatermark(ctx, pixelWidth, pixelHeight, identity);
 
         taskRef.current = null;
         setStatus('done');

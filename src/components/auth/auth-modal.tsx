@@ -60,7 +60,14 @@ interface ConflictDetails {
   lastActiveLabel?: string;
 }
 
-export function AuthModalProvider({ children }: { children: React.ReactNode }) {
+export function AuthModalProvider({
+  children,
+  emailVerification = true,
+}: {
+  children: React.ReactNode;
+  /** Whether sign-up needs a college address and a code. See `RegisterForm`. */
+  emailVerification?: boolean;
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<Mode>('signin');
@@ -220,7 +227,14 @@ export function AuthModalProvider({ children }: { children: React.ReactNode }) {
                 // The form carries its own "already have an account?" line, and
                 // the tabs above are the other way back, so nothing is added
                 // around it here.
-                <RegisterForm />
+                <RegisterForm
+                  emailVerification={emailVerification}
+                  redirectTo={target?.redirectTo}
+                  onRegistered={() => {
+                    setOpen(false);
+                    reset();
+                  }}
+                />
               ) : (
                 <form
                   className="space-y-4"
@@ -238,7 +252,7 @@ export function AuthModalProvider({ children }: { children: React.ReactNode }) {
                       type="email"
                       autoComplete="email"
                       required
-                      placeholder="you@mitwpu.edu.in"
+                      placeholder={emailVerification ? 'you@mitwpu.edu.in' : 'you@example.com'}
                       value={email}
                       onChange={(event) => setEmail(event.target.value)}
                     />

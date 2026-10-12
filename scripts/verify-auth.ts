@@ -14,6 +14,9 @@
  */
 import 'dotenv/config';
 
+// These checks exercise institutional verification, which is OFF by default.
+process.env.EMAIL_VERIFICATION_REQUIRED = 'true';
+
 const serverOnly = require.resolve('server-only');
 require.cache[serverOnly] = {
   id: serverOnly,

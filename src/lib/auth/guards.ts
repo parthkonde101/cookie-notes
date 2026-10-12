@@ -1,5 +1,6 @@
 import 'server-only';
 import { redirect } from 'next/navigation';
+import { env } from '@/lib/env';
 import { Errors } from '@/lib/errors';
 import { getSessionState, type ActiveSession, type SessionUser } from '@/lib/auth/session';
 
@@ -33,6 +34,11 @@ export interface GuardOptions {
  * of truth: once it is set, this returns false for good, so the prompt cannot
  * reappear.
  *
+ * While EMAIL_VERIFICATION_REQUIRED is off this is false for everyone, and with
+ * it every gate that asks it — the guards below, the layout's prompt, the banner,
+ * the feedback page — opens at once. Nothing is marked verified by that: an
+ * address that was never proved stays unproved.
+ *
  * Note what this deliberately does NOT consult: `verificationRequired`. That
  * flag distinguishes *how* an account was created, and a legacy student has it
  * false. The migration applies to every unverified student however they got
@@ -42,6 +48,7 @@ export function needsEmailMigration(user: {
   role: SessionUser['role'];
   emailVerifiedAt: Date | null;
 }): boolean {
+  if (!env.verification.required) return false;
   return user.role === 'STUDENT' && user.emailVerifiedAt === null;
 }
 

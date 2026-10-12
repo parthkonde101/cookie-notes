@@ -5,6 +5,7 @@ import { CollegeEmailForm } from '@/components/auth/college-email-form';
 import { CollegeStudentVerification } from '@/components/auth/college-student-verification';
 import { canVerifyCurrentEmail } from '@/lib/auth/current-email';
 import { lastIssuedAt, OTP_PURPOSE, OTP_TTL_MINUTES } from '@/lib/auth/otp';
+import { env } from '@/lib/env';
 import { needsEmailMigration, requireUser } from '@/lib/auth/guards';
 
 export const metadata: Metadata = { title: 'Verify your MIT-WPU email' };
@@ -51,6 +52,9 @@ export default async function VerifyCollegeEmailPage({
 }: {
   searchParams: Promise<{ next?: string }>;
 }) {
+  // Nothing to verify while the college-email requirement is switched off.
+  if (!env.verification.required) redirect('/');
+
   const { user } = await requireUser(undefined, { allowUnverified: true });
   const { next } = await searchParams;
   const nextHref = safeNext(next);

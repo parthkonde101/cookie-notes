@@ -1,8 +1,14 @@
 /**
  * End-to-end verification of the security-critical user journeys.
  *
- *   npm run build && npm run start        # in one terminal
- *   npm run verify:flows                  # in another
+ *   npm run build
+ *   EMAIL_VERIFICATION_REQUIRED=true NOTE_WATERMARK_ENABLED=true npm run start   # one terminal
+ *   EMAIL_VERIFICATION_REQUIRED=true NOTE_WATERMARK_ENABLED=true npm run verify:flows   # another
+ *
+ * This suite covers the college-email verification journeys and the watermark,
+ * both of which are switched OFF by default (see .env.example), so the server
+ * AND this process must be started with the two settings above. The behaviour
+ * with them off is covered by `npm run verify:no-verification`.
  *
  * Everything below runs against a real HTTP server with real cookies, a real
  * database and real files in storage. Nothing is mocked. Test accounts use the
@@ -27,6 +33,15 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { makeTestPdf } from './make-test-pdf';
 
 const BASE_URL = process.env.VERIFY_BASE_URL ?? 'http://localhost:3000';
+
+/** This suite exercises verification and watermarks, so it needs both switched on. */
+if (process.env.EMAIL_VERIFICATION_REQUIRED !== 'true' || process.env.NOTE_WATERMARK_ENABLED !== 'true') {
+  console.error(
+    '\nRun this suite — and the server under test — with EMAIL_VERIFICATION_REQUIRED=true and ' +
+      'NOTE_WATERMARK_ENABLED=true. Both are off by default.\n',
+  );
+  process.exit(3);
+}
 
 /**
  * Whether the server under test is running in open preview.
@@ -415,13 +430,16 @@ async function main() {
       analyticsConsent: true,
     });
 
-    // The whole point: a registered address and an unregistered one must be
-    // indistinguishable to whoever is asking.
-    check('registering a taken address does not reveal that it is taken', taken.status === 202, `status ${taken.status}`);
-    check('an unused address answers identically', free.status === taken.status);
-    const takenBody = await body<{ message?: string }>(taken);
-    const freeBody = await body<{ message?: string }>(free);
-    check('with the same message', takenBody.message === freeBody.message, takenBody.message);
+    // A registered address is refused plainly, with the way forward — and an unused
+    // one is accepted. The earlier "indistinguishable" answer is gone by decision.
+    check('registering a taken address is refused with a 409', taken.status === 409, `status ${taken.status}`);
+    const takenBody = await body<{ error?: string }>(taken);
+    check(
+      'and the message says to log in or recover the password',
+      /log in/i.test(takenBody.error ?? '') && /forgot password/i.test(takenBody.error ?? ''),
+      takenBody.error,
+    );
+    check('an unused address is accepted (202)', free.status === 202, `status ${free.status}`);
     check(
       'the existing account is not disturbed',
       (await prisma.user.findUniqueOrThrow({ where: { email: STUDENT_EMAIL } })).name === 'Verify Student',

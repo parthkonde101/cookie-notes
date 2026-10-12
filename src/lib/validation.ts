@@ -99,20 +99,33 @@ export const otpCodeSchema = z
  * experience, but a request posted straight to the API meets exactly the same
  * schema — a disabled button is not a control.
  */
+const registerFields = {
+  name: z.string().trim().min(2, 'Enter your full name.').max(80),
+  password: passwordSchema,
+  confirmPassword: z.string(),
+  college: z.string().trim().max(120).optional().or(z.literal('')),
+  program: z.string().trim().max(120).optional().or(z.literal('')),
+  semester: z.coerce.number().int().min(1).max(12).optional(),
+};
+
+const passwordsMatch = {
+  check: (data: { password: string; confirmPassword: string }) => data.password === data.confirmPassword,
+  options: { message: 'Passwords do not match.', path: ['confirmPassword'] as string[] },
+};
+
 export const registerSchema = z
-  .object({
-    name: z.string().trim().min(2, 'Enter your full name.').max(80),
-    email: studentEmailSchema,
-    password: passwordSchema,
-    confirmPassword: z.string(),
-    college: z.string().trim().max(120).optional().or(z.literal('')),
-    program: z.string().trim().max(120).optional().or(z.literal('')),
-    semester: z.coerce.number().int().min(1).max(12).optional(),
-  })
-  .refine((data) => data.password === data.confirmPassword, {
-    message: 'Passwords do not match.',
-    path: ['confirmPassword'],
-  });
+  .object({ ...registerFields, email: studentEmailSchema })
+  .refine(passwordsMatch.check, passwordsMatch.options);
+
+/**
+ * A new student account while EMAIL_VERIFICATION_REQUIRED is off: any valid email
+ * address, the same name, password and optional details, no domain rule. The
+ * domain rule above is not removed — it is what `registerSchema` still enforces
+ * when verification is on.
+ */
+export const openRegisterSchema = z
+  .object({ ...registerFields, email: emailSchema })
+  .refine(passwordsMatch.check, passwordsMatch.options);
 
 export const loginSchema = z.object({
   email: emailSchema,

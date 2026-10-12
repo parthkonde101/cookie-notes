@@ -27,6 +27,8 @@ import path from 'node:path';
 
 export interface OwnedServer {
   baseUrl: string;
+  /** The private storage directory the server reads files from; a suite may place fixtures here. */
+  storageDir: string;
   stop: () => Promise<void>;
 }
 
@@ -37,6 +39,12 @@ export interface StartOptions {
   authSecret: string;
   projectDir?: string;
   readyTimeoutMs?: number;
+  /**
+   * Extra settings for the server under test (a feature flag, say). Applied FIRST:
+   * the database, secrets, storage and mail settings below always win, so a suite
+   * cannot point the server somewhere else through this.
+   */
+  extraEnv?: Record<string, string>;
 }
 
 async function freeLoopbackPort(): Promise<number> {
@@ -72,7 +80,9 @@ export async function startOwnedServer(options: StartOptions): Promise<OwnedServ
   // Built from nothing: no `...process.env`. Only what the server needs, and
   // nothing that could name a different database (no PG*, no POSTGRES_*, no
   // DIRECT_URL) or a real mail provider.
+  const storageDir = mkdtempSync(path.join(tmpdir(), 'cookie-notes-test-storage-'));
   const env: Record<string, string> = {
+    ...(options.extraEnv ?? {}),
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
     NODE_ENV: 'production',
@@ -84,7 +94,7 @@ export async function startOwnedServer(options: StartOptions): Promise<OwnedServ
     MAIL_FROM: 'Cookie Notes <test@example.invalid>',
     RESEND_API_KEY: '',
     STORAGE_DRIVER: 'local',
-    STORAGE_LOCAL_DIR: mkdtempSync(path.join(tmpdir(), 'cookie-notes-test-storage-')),
+    STORAGE_LOCAL_DIR: storageDir,
     NEXT_TELEMETRY_DISABLED: '1',
   };
 
@@ -123,7 +133,7 @@ export async function startOwnedServer(options: StartOptions): Promise<OwnedServ
     try {
       // The sign-in page: it renders without touching the database.
       const response = await fetch(`${baseUrl}/login`, { redirect: 'manual' });
-      if (response.status === 200) return { baseUrl, stop };
+      if (response.status === 200) return { baseUrl, storageDir, stop };
     } catch {
       /* not up yet */
     }

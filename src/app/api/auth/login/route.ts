@@ -119,7 +119,11 @@ export async function POST(request: NextRequest) {
     //
     // Checked after the password so this cannot be used to probe which
     // addresses are registered: a wrong password fails first, identically.
-    if (user.verificationRequired && !user.emailVerifiedAt) {
+    //
+    // Applies only while EMAIL_VERIFICATION_REQUIRED is on. With it off, an
+    // account that never completed verification signs in with its password like
+    // any other — and is NOT marked verified by doing so.
+    if (env.verification.required && user.verificationRequired && !user.emailVerifiedAt) {
       await recordEvent({
         type: 'LOGIN_BLOCKED',
         userId: user.id,

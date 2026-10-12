@@ -1,15 +1,10 @@
 import type { Metadata } from 'next';
+import { cookies } from 'next/headers';
 import Link from 'next/link';
 import {
   Activity,
-  BellRing,
   BookOpen,
-  BookOpenCheck,
-  Clock,
   Flame,
-  MessageSquareText,
-  Repeat,
-  TrendingUp,
   UserCheck,
   UserPlus,
   Users,
@@ -17,10 +12,19 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageContainer, PageHeader } from '@/components/layout/page-header';
 import { StatCard } from '@/components/admin/stat-card';
-import { TrendChart } from '@/components/charts/trend-chart';
+import {
+  ActiveStudentsByMonthCard,
+  RegistrationsByMonthCard,
+  StudyHoursCard,
+  StudySubjectsCard,
+} from '@/components/admin/study-charts';
+import { env } from '@/lib/env';
 import { requireAdmin } from '@/lib/auth/guards';
-import { adminOverview, growthSeries } from '@/lib/analytics/queries';
-import { formatDuration, relativeTime } from '@/lib/utils';
+import { adminOverview } from '@/lib/analytics/queries';
+import { activeByMonth, registrationsByMonth, studyHours, studySubjects } from '@/lib/analytics/study';
+import { CHART_SETTINGS_COOKIE } from '@/lib/analytics/chart-settings';
+import { readChartChoices } from '@/lib/analytics/chart-settings-server';
+import { relativeTime } from '@/lib/utils';
 
 export const metadata: Metadata = { title: 'Admin overview' };
 export const dynamic = 'force-dynamic';
@@ -28,7 +32,19 @@ export const dynamic = 'force-dynamic';
 export default async function AdminDashboard() {
   await requireAdmin('/admin');
 
-  const [stats, series] = await Promise.all([adminOverview(), growthSeries(30)]);
+  // The charts come back as they were left: the choices are kept in a cookie, so
+  // the first view is already drawn with them.
+  const choices = readChartChoices((await cookies()).get(CHART_SETTINGS_COOKIE)?.value);
+
+  const [stats, hours, subjects, activeMonthly, registrationsMonthly, today] = await Promise.all([
+    adminOverview(),
+    studyHours(choices.hours.range, choices.hours.offset, choices.hours.custom),
+    studySubjects(choices.subjects.range, choices.subjects.offset, choices.subjects.custom),
+    activeByMonth(choices.activeMonths),
+    registrationsByMonth(choices.registrationMonths),
+    // Students who used notes today — the "Active today" figure.
+    studyHours('day', 0),
+  ]);
 
   return (
     <PageContainer className="max-w-7xl">
@@ -37,28 +53,40 @@ export default async function AdminDashboard() {
         description="Live numbers from the database — nothing here is estimated."
       />
 
-      {/* Reach — who is here, and how many of them are real, verified students. */}
+      {/* Reach — who is here, and how many of them are real students. */}
       <section className="mt-6 space-y-3">
         <h2 className="text-sm font-medium text-muted-foreground">Reach</h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <StatCard
             label="Total students"
             value={stats.totalUsers}
             icon={Users}
             hint={`${stats.activeUsers} active · ${stats.disabledUsers} disabled`}
           />
-          <StatCard
-            label="Verified students"
-            value={stats.verifiedStudents}
-            icon={UserCheck}
-            tone="success"
-            hint={`${percent(stats.verifiedStudents, stats.totalUsers)} of students have a verified college email`}
-          />
+          {/* About verified college emails, so it only means something while
+              verification is on. Off, the number would just read as a low score
+              for a check nobody is being asked to pass. */}
+          {env.verification.required && (
+            <StatCard
+              label="Verified students"
+              value={stats.verifiedStudents}
+              icon={UserCheck}
+              tone="success"
+              hint={`${percent(stats.verifiedStudents, stats.totalUsers)} of students have a verified college email`}
+            />
+          )}
           <StatCard
             label="New this week"
             value={stats.newThisWeek}
             icon={UserPlus}
             hint={`${stats.newToday} today`}
+          />
+          <StatCard
+            label="Active today"
+            value={today.students}
+            icon={Activity}
+            tone="primary"
+            hint={`students who used notes today · ${percent(today.students, stats.totalUsers)} of all students`}
           />
           <StatCard
             label="Studying now"
@@ -68,105 +96,17 @@ export default async function AdminDashboard() {
             hint={`Active in the last ${stats.liveWindowMinutes} minutes`}
           />
         </div>
-      </section>
 
-      {/* Use — are they coming back, and are they actually reading. */}
-      <section className="mt-6 space-y-3">
-        <h2 className="text-sm font-medium text-muted-foreground">Use</h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            label="Active today"
-            value={stats.dau}
-            icon={Activity}
-            hint={`${stats.wau} this week · ${stats.mau} this month`}
-          />
-          <StatCard
-            label="Read a note today"
-            value={stats.readersToday}
-            icon={BookOpenCheck}
-            hint={`${stats.viewsToday} notes opened today`}
-          />
-          <StatCard
-            label="Activation"
-            value={percent(stats.readersEver, stats.totalUsers)}
-            icon={TrendingUp}
-            tone="primary"
-            hint={`${stats.readersEver} of ${stats.totalUsers} students have opened a note`}
-          />
-          <StatCard
-            label="Came back this week"
-            value={stats.returningStudents}
-            icon={Repeat}
-            hint="Active on two or more days in the last 7"
-          />
-          <StatCard
-            label="Average reading time"
-            value={formatDuration(stats.averageReadMs)}
-            icon={Clock}
-            hint="Per reading session"
-          />
-          <StatCard
-            label="Waiting for notes"
-            value={stats.reminders}
-            icon={BellRing}
-            hint="“Notify me” requests on units still baking"
-          />
-          <StatCard
-            label="Notes per reader"
-            value={stats.readersEver > 0 ? (stats.totalViews / stats.readersEver).toFixed(1) : '—'}
-            icon={BookOpen}
-            hint={`${stats.totalViews} opens by ${stats.readersEver} readers, all time`}
-          />
-          <StatCard
-            label="Feedback received"
-            value={stats.feedbackCount}
-            icon={MessageSquareText}
-            hint="Testimonials written by students"
-          />
+        <div className="grid gap-6 pt-3 lg:grid-cols-2 [&>*]:min-w-0">
+          <StudyHoursCard initial={hours} />
+          <StudySubjectsCard initial={subjects} />
+        </div>
+
+        <div className="grid gap-6 pt-3 lg:grid-cols-2 [&>*]:min-w-0">
+          <ActiveStudentsByMonthCard initial={activeMonthly} />
+          <RegistrationsByMonthCard initial={registrationsMonthly} />
         </div>
       </section>
-
-      <div className="mt-6 grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle>Registrations</CardTitle>
-            <CardDescription>New student accounts per day, last 30 days</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <TrendChart data={series.registrations} suffix="sign-ups" variant="bar" />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle>Daily active users</CardTitle>
-            <CardDescription>Distinct students with recorded activity</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <TrendChart data={series.activeUsers} suffix="students" color="hsl(var(--success))" />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle>Note views</CardTitle>
-            <CardDescription>Times a note was opened</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <TrendChart data={series.noteViews} suffix="views" />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle>Sign-ins</CardTitle>
-            <CardDescription>Successful logins per day</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <TrendChart data={series.logins} suffix="sign-ins" color="hsl(var(--warning))" variant="bar" />
-          </CardContent>
-        </Card>
-      </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
         <Card>

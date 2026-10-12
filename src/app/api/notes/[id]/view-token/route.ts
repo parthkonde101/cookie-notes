@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { env } from '@/lib/env';
 import { toErrorResponse, Errors } from '@/lib/errors';
 import { contextFromHeaders } from '@/lib/request';
 import { requireApiUser } from '@/lib/auth/guards';
@@ -60,12 +61,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         token,
         expiresAt: expiresAt.toISOString(),
         contentUrl: `/api/notes/${note.id}/content?t=${encodeURIComponent(token)}`,
-        watermark: {
-          email: user.email,
-          name: user.name,
-          sessionRef: session.id.slice(-8).toUpperCase(),
-          issuedAt: new Date().toISOString(),
-        },
+        // Watermarks are switched off for the free launch (NOTE_WATERMARK_ENABLED).
+        // With them off nothing about the reader is sent for one — not even the
+        // email — and the viewer paints the page exactly as the PDF has it.
+        watermark: env.notes.watermark
+          ? {
+              email: user.email,
+              name: user.name,
+              sessionRef: session.id.slice(-8).toUpperCase(),
+              issuedAt: new Date().toISOString(),
+            }
+          : null,
       },
       { headers: { 'Cache-Control': 'no-store' } },
     );

@@ -42,7 +42,12 @@ interface OpenResponse {
   /** Null for documents that are not tracked per reading (previous-year papers). */
   viewId: string | null;
   contentUrl: string;
-  watermark: { email: string; name: string; sessionRef: string; issuedAt: string };
+  /**
+   * The mark to paint, or null when watermarks are off (NOTE_WATERMARK_ENABLED).
+   * Null means no identity is drawn and no caption is shown — the page is
+   * painted exactly as the PDF has it.
+   */
+  watermark: { email: string; name: string; sessionRef: string; issuedAt: string } | null;
 }
 
 type Status = 'loading' | 'ready' | 'error';
@@ -173,15 +178,19 @@ export function NoteViewer({
         if (cancelled) return;
 
         viewIdRef.current = open.viewId;
-        setIdentity({
-          email: open.watermark.email,
-          sessionRef: open.watermark.sessionRef,
-          dateLabel: new Date(open.watermark.issuedAt).toLocaleDateString('en-GB', {
-            day: '2-digit',
-            month: 'short',
-            year: 'numeric',
-          }),
-        });
+        setIdentity(
+          open.watermark
+            ? {
+                email: open.watermark.email,
+                sessionRef: open.watermark.sessionRef,
+                dateLabel: new Date(open.watermark.issuedAt).toLocaleDateString('en-GB', {
+                  day: '2-digit',
+                  month: 'short',
+                  year: 'numeric',
+                }),
+              }
+            : null,
+        );
 
         // 2. Fetch the bytes. They never touch a public URL and are not cached.
         const contentResponse = await fetch(open.contentUrl, { cache: 'no-store' });
@@ -524,7 +533,6 @@ export function NoteViewer({
           style={contentWidth ? { width: contentWidth } : undefined}
         >
           {doc &&
-            identity &&
             pages.map((pageNumber) => (
               <PdfPage
                 key={pageNumber}
@@ -556,12 +564,15 @@ export function NoteViewer({
         )}
       </div>
 
-      <footer className="border-t border-border px-4 py-2.5 print-hidden">
-        <p className="flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
-          <AlertTriangle className="size-3" />
-          Personalised copy — sharing or redistributing it is traceable to your account.
-        </p>
-      </footer>
+      {/* The notice describes the watermark, so it goes when the watermark does. */}
+      {identity && (
+        <footer className="border-t border-border px-4 py-2.5 print-hidden">
+          <p className="flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+            <AlertTriangle className="size-3" />
+            Personalised copy — sharing or redistributing it is traceable to your account.
+          </p>
+        </footer>
+      )}
     </div>
   );
 }

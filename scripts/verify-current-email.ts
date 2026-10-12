@@ -26,6 +26,9 @@
  * loopback test database — including whatever `.env` happens to point at.
  */
 import 'dotenv/config';
+
+// These checks exercise institutional verification, which is OFF by default.
+process.env.EMAIL_VERIFICATION_REQUIRED = 'true';
 import { spawnSync } from 'node:child_process';
 import { createServer as createTcpServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
@@ -189,7 +192,7 @@ async function main() {
   // above — and it has to prove it is using it before anything else happens.
   const authSecret = process.env.AUTH_SECRET ?? '';
   try {
-    ownedServer = await startOwnedServer({ databaseUrl: process.env.DATABASE_URL!, authSecret });
+    ownedServer = await startOwnedServer({ databaseUrl: process.env.DATABASE_URL!, authSecret, extraEnv: { EMAIL_VERIFICATION_REQUIRED: 'true', NOTE_WATERMARK_ENABLED: 'true' } });
     const usesApprovedDatabase = await confirmServerUsesDatabase(ownedServer.baseUrl, handshakeProbe);
     if (!usesApprovedDatabase) throw new Error('The test server could not be shown to be using the approved database.');
     BASE_URL = ownedServer.baseUrl;

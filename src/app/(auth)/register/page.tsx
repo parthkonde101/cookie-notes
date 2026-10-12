@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { RegisterForm } from '@/components/auth/register-form';
+import { env } from '@/lib/env';
 import { optionalUser } from '@/lib/auth/guards';
 
 export const metadata: Metadata = { title: 'Create account' };
@@ -17,7 +18,7 @@ export default async function RegisterPage() {
         <CardTitle className="text-xl">Create your account</CardTitle>
       </CardHeader>
       <CardContent>
-        <RegisterForm />
+        <RegisterForm emailVerification={env.verification.required} />
       </CardContent>
     </Card>
   );

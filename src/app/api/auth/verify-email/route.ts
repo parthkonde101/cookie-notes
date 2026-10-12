@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { env } from '@/lib/env';
 import { Errors, toErrorResponse } from '@/lib/errors';
 import { contextFromHeaders } from '@/lib/request';
 import {
@@ -32,6 +33,11 @@ export const dynamic = 'force-dynamic';
  */
 export async function POST(request: NextRequest) {
   try {
+    // Institutional verification is switched off (EMAIL_VERIFICATION_REQUIRED): this
+    // endpoint does not exist. Checked first, so nothing is read, no mail is sent
+    // and no verification record is touched.
+    if (!env.verification.required) throw Errors.notFound();
+
     const ctx = contextFromHeaders(request.headers);
 
     const body = await request.json().catch(() => null);
@@ -113,6 +119,11 @@ export async function POST(request: NextRequest) {
  */
 export async function PUT(request: NextRequest) {
   try {
+    // Institutional verification is switched off (EMAIL_VERIFICATION_REQUIRED): this
+    // endpoint does not exist. Checked first, so nothing is read, no mail is sent
+    // and no verification record is touched.
+    if (!env.verification.required) throw Errors.notFound();
+
     const ctx = contextFromHeaders(request.headers);
 
     const body = await request.json().catch(() => null);

@@ -36,6 +36,29 @@ function bool(name: string, fallback: boolean): boolean {
   return raw === 'true' || raw === '1';
 }
 
+/**
+ * How EMAIL_VERIFICATION_REQUIRED is read.
+ *
+ *   unset / empty      → verification OFF (the intended deployment default)
+ *   true / 1           → ON
+ *   false / 0          → OFF
+ *   anything else      → ON, and `productionConfigWarnings` says so
+ *
+ * Case and surrounding spaces are ignored. A value that is present but not
+ * recognised fails to the STRICTER side: a typo can lock new sign-ups into the
+ * verification flow, but it can never quietly switch a security check off.
+ */
+export function readEmailVerificationSetting(raw: string | undefined): {
+  required: boolean;
+  source: 'default' | 'set' | 'invalid';
+} {
+  const value = (raw ?? '').trim().toLowerCase();
+  if (value === '') return { required: false, source: 'default' };
+  if (value === 'true' || value === '1') return { required: true, source: 'set' };
+  if (value === 'false' || value === '0') return { required: false, source: 'set' };
+  return { required: true, source: 'invalid' };
+}
+
 export const env = {
   get isProduction() {
     return process.env.NODE_ENV === 'production';
@@ -89,6 +112,60 @@ export const env = {
     },
     get analyticsVersion() {
       return process.env.ANALYTICS_CONSENT_VERSION ?? '2026-09-01';
+    },
+  },
+
+  /**
+   * Institutional email verification — the college-address policy, the sign-up
+   * code, and the gate that keeps an unverified student from reading.
+   *
+   * OFF means: any valid email can register and is signed in at once, nobody is
+   * asked for a code, and nobody is stopped from reading for want of one.
+   * Nothing is deleted and no address is ever marked verified because of it, and
+   * setting it to `true` restores the verification behaviour exactly.
+   * See `readEmailVerificationSetting` for how the value is read.
+   */
+  verification: {
+    get required(): boolean {
+      return readEmailVerificationSetting(process.env.EMAIL_VERIFICATION_REQUIRED).required;
+    },
+    get source() {
+      return readEmailVerificationSetting(process.env.EMAIL_VERIFICATION_REQUIRED).source;
+    },
+  },
+
+  notes: {
+    /**
+     * Whether the reader burns the reader's email onto each page and prints a
+     * "Licensed to…" line under it. OFF for the free launch; set to `true` to
+     * bring it back. Only the exact values `true` and `1` turn it on.
+     *
+     * When off, the view-token response carries no watermark at all, so no email
+     * is even sent to the browser for it.
+     */
+    get watermark(): boolean {
+      const value = (process.env.NOTE_WATERMARK_ENABLED ?? '').trim().toLowerCase();
+      return value === 'true' || value === '1';
+    },
+  },
+
+  analytics: {
+    /**
+     * The clock the admin "when do students study" chart reads: hours of the day
+     * are hours on THIS clock, not UTC, so a 9 pm peak is 9 pm for the students.
+     * An IANA name (ANALYTICS_TIMEZONE, e.g. "Asia/Kolkata"); one the platform
+     * does not recognise is ignored and the default is used.
+     */
+    get timezone(): string {
+      const fallback = 'Asia/Kolkata';
+      const raw = (process.env.ANALYTICS_TIMEZONE ?? '').trim();
+      if (!raw) return fallback;
+      try {
+        new Intl.DateTimeFormat('en-GB', { timeZone: raw });
+        return raw;
+      } catch {
+        return fallback;
+      }
     },
   },
 
@@ -166,8 +243,22 @@ export const env = {
     get lockoutMinutes() {
       return num('LOCKOUT_MINUTES', 15);
     },
+    /**
+     * Sign-up attempts one IP address may make per hour (REGISTER_MAX_PER_HOUR).
+     *
+     * A whole campus can share an address, so while verification is off — open
+     * registration for the free launch — the default is a generous 100. With
+     * verification on, every attempt sends an email, so the original 10 stays.
+     * The setting must be a whole number of at least 1; anything else (empty, 0,
+     * negative, text) is ignored and the default applies. There is no value that
+     * switches the limit off.
+     */
     get registerMaxPerHour() {
-      return num('REGISTER_MAX_PER_HOUR', 10);
+      const fallback = env.verification.required ? 10 : 100;
+      const raw = (process.env.REGISTER_MAX_PER_HOUR ?? '').trim();
+      if (!/^\d+$/.test(raw)) return fallback;
+      const value = Number(raw);
+      return value >= 1 ? value : fallback;
     },
   },
 
@@ -244,11 +335,21 @@ export function productionConfigWarnings(): string[] {
   // depends on mail actually leaving the building — an undelivered verification
   // code means nobody can create an account at all — so this is worth shouting
   // about at boot rather than discovering from a support message.
+  if (env.verification.source === 'invalid') {
+    problems.push(
+      'EMAIL_VERIFICATION_REQUIRED is set to a value that is not true, false, 1 or 0 — ' +
+        'verification is being treated as REQUIRED. Set it to "false" or "true" explicitly.',
+    );
+  }
+
   if (env.mail.driver !== 'resend') {
     problems.push(
-      'MAIL_DRIVER is not "resend" in production — password resets and sign-up ' +
-        'verification codes will be printed to the log instead of emailed, so no ' +
-        'student will be able to register or recover their account.',
+      env.verification.required
+        ? 'MAIL_DRIVER is not "resend" in production — password resets and sign-up ' +
+            'verification codes will be printed to the log instead of emailed, so no ' +
+            'student will be able to register or recover their account.'
+        : 'MAIL_DRIVER is not "resend" in production — password reset links will be ' +
+            'printed to the log instead of emailed, so no student will be able to recover their account.',
     );
   } else {
     if (!env.mail.resendApiKey) {

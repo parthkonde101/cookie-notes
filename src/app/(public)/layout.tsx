@@ -5,6 +5,7 @@ import { SiteHeader } from '@/components/layout/site-header';
 import { SessionHeartbeat } from '@/components/session/heartbeat';
 import { EMAIL_MIGRATION_PATH, needsEmailMigration, optionalUser } from '@/lib/auth/guards';
 import { countLiveUsers } from '@/lib/auth/session';
+import { env } from '@/lib/env';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,7 +29,7 @@ export default async function PublicLayout({ children }: { children: React.React
   const mustVerify = auth ? needsEmailMigration(auth.user) : false;
 
   return (
-    <AuthModalProvider>
+    <AuthModalProvider emailVerification={env.verification.required}>
       <VerificationGateProvider mustVerify={mustVerify} verifyPath={EMAIL_MIGRATION_PATH}>
         {auth && <SessionHeartbeat />}
 

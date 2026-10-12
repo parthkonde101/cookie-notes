@@ -5,16 +5,24 @@ import { Errors, toErrorResponse } from '@/lib/errors';
 import { contextFromHeaders } from '@/lib/request';
 import { checkPasswordStrength, hashPassword } from '@/lib/auth/password';
 import { OTP_PURPOSE, OTP_TTL_MINUTES } from '@/lib/auth/otp';
+import { createSession, setRoleHintCookie, setSessionCookie } from '@/lib/auth/session';
 import { issueAndSendCode } from '@/lib/auth/send-code';
 import { assertWithinLimits, rateLimit } from '@/lib/auth/rate-limit';
 import { recordEvent } from '@/lib/analytics/events';
-import { sendMail, verificationCodeEmail } from '@/lib/mail';
-import { firstError, registerSchema } from '@/lib/validation';
+import { verificationCodeEmail } from '@/lib/mail';
+import { firstError, openRegisterSchema, registerSchema } from '@/lib/validation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
+ * Creates a student account.
+ *
+ * With EMAIL_VERIFICATION_REQUIRED off (the deployment default) this is simple
+ * registration — see `registerWithoutVerification` at the bottom: any valid
+ * email, no code, signed in at once. Everything below it describes the flow used
+ * when verification is required, and is unchanged.
+ *
  * Creates a student account, pending email verification.
  *
  * Three things about this flow are deliberate.
@@ -24,11 +32,14 @@ export const dynamic = 'force-dynamic';
  * /api/auth/login, and only once the address has been proved. Registration and
  * verification are not authentication events, and neither creates a session.
  *
- * It answers identically whether or not the address is already registered.
- * The previous 409 "an account with this email already exists" was a free
- * membership oracle for anyone with a list of addresses. Now every well-formed
- * request gets the same 202 and the same wording; what differs is only which
- * email is sent, and that goes to the address's real owner.
+ * It never touches an account that already exists. An address that is already
+ * registered — in any state — is refused with a clear 409 pointing the person to
+ * sign in or recover their password, and nothing about that account (password,
+ * name, verification state) is read back or changed. The earlier version
+ * answered every request identically to avoid revealing which addresses are
+ * registered, and quietly replaced the details of an unverified account on
+ * re-registration; both are gone, the second because it let anyone who knew an
+ * address overwrite the account behind it.
  *
  * It refuses to proceed if mail is not configured. An account that cannot
  * receive its code is an account nobody can ever sign in to, so a console-mode
@@ -37,6 +48,8 @@ export const dynamic = 'force-dynamic';
 export async function POST(request: NextRequest) {
   try {
     const ctx = contextFromHeaders(request.headers);
+
+    if (!env.verification.required) return await registerWithoutVerification(request, ctx);
 
     // Everything here that sends mail fails CLOSED: if the limiter cannot run,
     // that is not permission to send.
@@ -65,41 +78,18 @@ export async function POST(request: NextRequest) {
     const perEmail = await rateLimit(`register:email:${email}`, 5, 60, { failClosed: true });
     assertWithinLimits(...(perEmail.unavailable ? [perEmail] : []));
     if (!perEmail.allowed) {
-      // Same shape as success: a rate-limit message keyed to an address would
-      // itself reveal that the address is interesting.
-      return acceptedResponse();
+      throw Errors.rateLimited('Too many attempts for this email address. Try again later.');
     }
 
-    const existing = await prisma.user.findUnique({
-      where: { email },
-      select: { id: true, name: true, status: true, emailVerifiedAt: true, verificationRequired: true },
-    });
-
-    // --- already registered, already verified -------------------------------
-    // Nothing is created and nothing is changed. The real owner is told that
-    // someone tried, which is useful to them; the person who submitted the form
-    // sees the same page either way.
-    if (existing && (existing.emailVerifiedAt || !existing.verificationRequired)) {
-      await sendMail({
-        to: email,
-        subject: 'Someone tried to sign up with your Cookie Notes email',
-        text: [
-          `Hi ${existing.name},`,
-          '',
-          'Someone just tried to create a Cookie Notes account with this email address.',
-          'You already have one, so nothing has changed and no new account was made.',
-          '',
-          'If that was you, sign in instead — or use "Forgot password?" if you cannot get in.',
-          'If it was not you, you can safely ignore this email.',
-          '',
-          '—',
-          'Cookie Notes · Baked for exams.',
-        ].join('\n'),
-      }).catch((error) => {
-        console.error('[register] duplicate-notice mail failed', error);
-      });
-      return acceptedResponse();
-    }
+    // An address that already has an account is refused, plainly, whatever state
+    // that account is in — verified, awaiting verification, or an older account
+    // that predates verification. Registration only ever CREATES: it never touches
+    // the password, name, verification state or any other detail of an account
+    // that exists, so knowing someone's address gives no way to alter their
+    // account. Someone who abandoned an earlier attempt signs in (which tells them
+    // to verify) or uses "Forgot password".
+    const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+    if (existing) throw Errors.conflict(ALREADY_REGISTERED);
 
     const passwordHash = await hashPassword(password);
 
@@ -107,51 +97,27 @@ export async function POST(request: NextRequest) {
     // terms or data-use checkbox, because that wording has not been reviewed,
     // and recording an acceptance nobody was asked for would be inventing one.
     // The columns stay NULL until a reviewed notice exists.
-
-    let userId: string;
-    let displayName: string;
-
-    if (existing) {
-      // --- registered but never verified ------------------------------------
-      // No account was ever usable here, so re-registering replaces the details
-      // and re-sends a code rather than erroring. This is what stops an
-      // abandoned attempt from permanently squatting a real student's address.
-      const updated = await prisma.user.update({
-        where: { id: existing.id },
-        data: {
-          name,
-          passwordHash,
-          college: college || null,
-          program: program || null,
-          semester: semester ?? null,
-        },
-        select: { id: true, name: true },
-      });
-      userId = updated.id;
-      displayName = updated.name;
-    } else {
-      const created = await prisma.user.create({
-        data: {
-          name,
-          email,
-          passwordHash,
-          role: 'STUDENT',
-          status: 'ACTIVE',
-          // The account exists but cannot be signed in to until the code is
-          // entered. Enforced in the login route, server-side.
-          verificationRequired: true,
-          emailVerifiedAt: null,
-          college: college || null,
-          program: program || null,
-          semester: semester ?? null,
-        },
-        select: { id: true, name: true },
-      });
-      userId = created.id;
-      displayName = created.name;
-      await recordEvent({ type: 'USER_REGISTERED', userId, ctx });
-      await recordEvent({ type: 'ACCOUNT_CREATED', userId, ctx, metadata: { via: 'self_signup' } });
-    }
+    const created = await prisma.user.create({
+      data: {
+        name,
+        email,
+        passwordHash,
+        role: 'STUDENT',
+        status: 'ACTIVE',
+        // The account exists but cannot be signed in to until the code is
+        // entered. Enforced in the login route, server-side.
+        verificationRequired: true,
+        emailVerifiedAt: null,
+        college: college || null,
+        program: program || null,
+        semester: semester ?? null,
+      },
+      select: { id: true, name: true },
+    });
+    const userId = created.id;
+    const displayName = created.name;
+    await recordEvent({ type: 'USER_REGISTERED', userId, ctx });
+    await recordEvent({ type: 'ACCOUNT_CREATED', userId, ctx, metadata: { via: 'self_signup' } });
 
     // Issuing supersedes any earlier code for this user, so pressing the button
     // twice leaves exactly one code live.
@@ -171,23 +137,16 @@ export async function POST(request: NextRequest) {
 
     return acceptedResponse();
   } catch (error) {
-    // Unique-constraint race: two requests for the same email at once.
+    // Unique-constraint race: two requests for the same email at once. The loser
+    // gets the same clear answer as any other duplicate.
     if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002') {
-      // Email collision: answer exactly as a successful submission would, so
-      // the race cannot be used to learn that an address is taken.
-      return acceptedResponse();
+      return toErrorResponse(Errors.conflict(ALREADY_REGISTERED));
     }
     return toErrorResponse(error);
   }
 }
 
-/**
- * The single answer this endpoint gives to any well-formed submission.
- *
- * Identical for a brand-new account, a re-registration of an unverified one,
- * and an address that already belongs to somebody — so the response cannot be
- * used to test whether an email is registered.
- */
+/** The answer for a new account whose verification code is on its way. */
 function acceptedResponse() {
   return NextResponse.json(
     {
@@ -199,3 +158,70 @@ function acceptedResponse() {
     { status: 202 },
   );
 }
+
+/**
+ * Registration while verification is not required: the original sign-up.
+ *
+ * Any syntactically valid email, a password that meets the strength rules, and
+ * the student is signed in straight away. No code is generated or sent, and
+ * nothing is recorded as verified: `emailVerifiedAt` stays null, because an
+ * address that was never proved is not a verified one.
+ *
+ * The network limit and the password rules are the same as the verification
+ * flow's. A duplicate address is answered plainly (409) with the way forward,
+ * because the student needs to know to log in or recover their password.
+ */
+async function registerWithoutVerification(request: NextRequest, ctx: ReturnType<typeof contextFromHeaders>) {
+  const limit = await rateLimit(`register:${ctx.ip ?? 'unknown'}`, env.rateLimit.registerMaxPerHour, 60);
+  if (!limit.allowed) {
+    throw Errors.rateLimited('Too many sign-up attempts from this network. Try again later.');
+  }
+
+  const body = await request.json().catch(() => null);
+  const parsed = openRegisterSchema.safeParse(body);
+  if (!parsed.success) throw Errors.validation(firstError(parsed.error));
+
+  const { name, email, password, college, program, semester } = parsed.data;
+
+  const strength = checkPasswordStrength(password, email);
+  if (!strength.ok) throw Errors.validation(strength.problems[0]!);
+
+  const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+  if (existing) throw Errors.conflict(ALREADY_REGISTERED);
+
+  let user;
+  try {
+    user = await prisma.user.create({
+      data: {
+        name,
+        email,
+        passwordHash: await hashPassword(password),
+        role: 'STUDENT',
+        status: 'ACTIVE',
+        college: college || null,
+        program: program || null,
+        semester: semester ?? null,
+        lastLoginAt: new Date(),
+      },
+    });
+  } catch (error) {
+    // Two requests for the same address at once.
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002') {
+      throw Errors.conflict(ALREADY_REGISTERED);
+    }
+    throw error;
+  }
+
+  const { session, token } = await createSession(user.id, ctx);
+  await setSessionCookie(token);
+  await setRoleHintCookie(user.role);
+
+  await recordEvent({ type: 'USER_REGISTERED', userId: user.id, sessionId: session.id, ctx });
+  await recordEvent({ type: 'ACCOUNT_CREATED', userId: user.id, ctx, metadata: { via: 'self_signup' } });
+  await recordEvent({ type: 'SESSION_CREATED', userId: user.id, sessionId: session.id, ctx });
+
+  return NextResponse.json({ ok: true, redirectTo: '/' }, { status: 201 });
+}
+
+const ALREADY_REGISTERED =
+  'An account with this email already exists. Log in instead, or use "Forgot password?" if you cannot remember your password.';

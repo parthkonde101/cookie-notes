@@ -11,6 +11,7 @@ import { PageContainer, PageHeader } from '@/components/layout/page-header';
 import { ActionForm, Field } from '@/components/admin/action-form';
 import { StatCard } from '@/components/admin/stat-card';
 import { createUserAction } from '@/app/admin/_actions/users';
+import { env } from '@/lib/env';
 import { prisma } from '@/lib/prisma';
 import { requireAdmin } from '@/lib/auth/guards';
 import { liveCutoff } from '@/lib/auth/session';
@@ -110,27 +111,29 @@ export default async function AdminUsersPage({
 
       {/* Legacy email verification, as three numbers. Enough to tell whether
           the migration is progressing, without becoming a dashboard. */}
-      <section className="mt-6">
-        <h2 className="text-sm font-medium text-muted-foreground">Legacy email verification</h2>
-        <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <StatCard
-            label="Total requiring verification"
-            value={studentTotal}
-            hint="Active student accounts"
-          />
-          <StatCard
-            label="Verified"
-            value={studentVerified}
-            tone={studentRemaining === 0 ? 'success' : undefined}
-            hint="Completed the MIT-WPU check"
-          />
-          <StatCard
-            label="Remaining"
-            value={studentRemaining}
-            hint="Prompted at their next sign-in"
-          />
-        </div>
-      </section>
+      {env.verification.required && (
+        <section className="mt-6">
+          <h2 className="text-sm font-medium text-muted-foreground">Legacy email verification</h2>
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <StatCard
+              label="Total requiring verification"
+              value={studentTotal}
+              hint="Active student accounts"
+            />
+            <StatCard
+              label="Verified"
+              value={studentVerified}
+              tone={studentRemaining === 0 ? 'success' : undefined}
+              hint="Completed the MIT-WPU check"
+            />
+            <StatCard
+              label="Remaining"
+              value={studentRemaining}
+              hint="Prompted at their next sign-in"
+            />
+          </div>
+        </section>
+      )}
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_320px]">
         <div className="min-w-0 space-y-4">
@@ -201,11 +204,13 @@ export default async function AdminUsersPage({
                             {user.status.toLowerCase()}
                           </Badge>
                           {user.role === 'ADMIN' && <Badge>admin</Badge>}
+                          {/* "Verified" is only ever a fact about an address that was proved;
+                              "needs email" only means something while verification is required. */}
                           {user.role === 'STUDENT' &&
                             (user.emailVerifiedAt ? (
                               <Badge variant="success">email verified</Badge>
                             ) : (
-                              <Badge variant="warning">needs email</Badge>
+                              env.verification.required && <Badge variant="warning">needs email</Badge>
                             ))}
                           {live.has(user.id) && <Badge variant="secondary">online</Badge>}
                         </div>

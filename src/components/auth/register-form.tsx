@@ -32,7 +32,29 @@ function evaluate(password: string, email: string) {
   ];
 }
 
-export function RegisterForm() {
+/**
+ * `emailVerification` says which registration this server is running:
+ * true — a college address and a code by email (the account is not usable until
+ * the code is entered); false — any email, signed in at once. It comes from the
+ * server's EMAIL_VERIFICATION_REQUIRED setting, so the words on the form always
+ * match what the server will do. The server still enforces its own rules.
+ */
+export function RegisterForm({
+  emailVerification = true,
+  redirectTo,
+  onRegistered,
+}: {
+  emailVerification?: boolean;
+  /**
+   * Where to go once registered and signed in (verification off). The sign-in
+   * modal passes the page the student was trying to reach, so signing up from a
+   * note lands them on that note rather than the home page. Never used when a
+   * code has to be entered first: that still goes to the verification screen.
+   */
+  redirectTo?: string;
+  /** Called just before navigating after a signed-in registration — the modal closes itself here. */
+  onRegistered?: () => void;
+}) {
   const router = useRouter();
   const [form, setForm] = useState({
     name: '',
@@ -79,9 +101,17 @@ export function RegisterForm() {
         return;
       }
 
-      // No session yet — the account is not usable until the emailed code is
-      // entered, so the next step is the verification screen, not the app.
-      router.replace(`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`);
+      if (data.status === 'verification_sent') {
+        // No session yet — the account is not usable until the emailed code is
+        // entered, so the next step is the verification screen, not the app.
+        router.replace(`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`);
+        return;
+      }
+
+      // Registered and signed in: straight into the app, to where they were headed.
+      onRegistered?.();
+      router.replace(redirectTo ?? (typeof data.redirectTo === 'string' ? data.redirectTo : '/'));
+      router.refresh();
     } catch {
       setError('We could not reach the server. Check your connection and try again.');
     } finally {
@@ -99,23 +129,25 @@ export function RegisterForm() {
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="email">MIT-WPU email</Label>
+        <Label htmlFor="email">{emailVerification ? 'MIT-WPU email' : 'Email'}</Label>
         <Input
           id="email"
           type="email"
           required
           autoComplete="email"
-          placeholder="you@mitwpu.edu.in"
+          placeholder={emailVerification ? 'you@mitwpu.edu.in' : 'you@example.com'}
           value={form.email}
           onChange={update('email')}
-          aria-describedby="email-hint"
+          aria-describedby={emailVerification ? 'email-hint' : undefined}
         />
-        <p id="email-hint" className="text-xs text-muted-foreground">
-          Accounts are open to MIT-WPU students, so this must end in
-          {' '}
-          <span className="font-medium text-foreground">@mitwpu.edu.in</span>. We will email you a
-          6-digit code to confirm it.
-        </p>
+        {emailVerification && (
+          <p id="email-hint" className="text-xs text-muted-foreground">
+            Accounts are open to MIT-WPU students, so this must end in
+            {' '}
+            <span className="font-medium text-foreground">@mitwpu.edu.in</span>. We will email you a
+            6-digit code to confirm it.
+          </p>
+        )}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -210,7 +242,7 @@ export function RegisterForm() {
       </details>
 
       <Button type="submit" className="w-full" size="lg" loading={pending}>
-        {pending ? 'Sending your code…' : 'Create account'}
+        {pending ? (emailVerification ? 'Sending your code…' : 'Creating your account…') : 'Create account'}
       </Button>
 
       <p className="text-center text-sm text-muted-foreground">

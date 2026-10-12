@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { VerifyEmailForm } from '@/components/auth/verify-email-form';
+import { env } from '@/lib/env';
 import { optionalUser } from '@/lib/auth/guards';
 
 export const metadata: Metadata = { title: 'Verify your email' };
@@ -22,6 +23,8 @@ export default async function VerifyEmailPage({
 }) {
   const auth = await optionalUser();
   if (auth) redirect(auth.user.role === 'ADMIN' ? '/admin' : '/');
+  // There is no sign-up code to enter while verification is switched off.
+  if (!env.verification.required) redirect('/login');
 
   const { email } = await searchParams;
   // Nothing to verify without knowing which address — send them to sign in,

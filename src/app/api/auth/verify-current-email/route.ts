@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { env } from '@/lib/env';
 import { Errors, toErrorResponse } from '@/lib/errors';
 import { contextFromHeaders } from '@/lib/request';
 import { requireApiUser } from '@/lib/auth/guards';
@@ -54,6 +55,11 @@ class NotMarkable extends Error {}
 /** Send a code to the address on the account. No request body is read. */
 export async function POST(request: NextRequest) {
   try {
+    // Institutional verification is switched off (EMAIL_VERIFICATION_REQUIRED): this
+    // endpoint does not exist. Checked first, so nothing is read, no mail is sent
+    // and no verification record is touched.
+    if (!env.verification.required) throw Errors.notFound();
+
     const { user } = await requireApiUser({ allowUnverified: true });
     const ctx = contextFromHeaders(request.headers);
 
@@ -127,6 +133,11 @@ export async function POST(request: NextRequest) {
 /** Confirm the code and record that the current address was proved. */
 export async function PUT(request: NextRequest) {
   try {
+    // Institutional verification is switched off (EMAIL_VERIFICATION_REQUIRED): this
+    // endpoint does not exist. Checked first, so nothing is read, no mail is sent
+    // and no verification record is touched.
+    if (!env.verification.required) throw Errors.notFound();
+
     const { user, session } = await requireApiUser({ allowUnverified: true });
     const ctx = contextFromHeaders(request.headers);
 
