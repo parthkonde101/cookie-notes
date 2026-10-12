@@ -79,15 +79,6 @@ export async function adminOverview() {
     prisma.feedback.count(),
   ]);
 
-  const [mostViewedNote, mostActiveUsers] = await Promise.all([
-    prisma.note.findFirst({
-      where: { viewCount: { gt: 0 } },
-      orderBy: { viewCount: 'desc' },
-      select: { id: true, title: true, viewCount: true, subject: { select: { name: true } } },
-    }),
-    topActiveUsers(5),
-  ]);
-
   return {
     totalUsers,
     activeUsers,
@@ -113,8 +104,6 @@ export async function adminOverview() {
     /** "Notify me" requests on units still being baked — unmet demand. */
     reminders,
     feedbackCount,
-    mostViewedNote,
-    mostActiveUsers,
     liveWindowMinutes: env.liveWindowMinutes,
   };
 }
@@ -155,21 +144,6 @@ async function distinctActiveUsers(since: Date): Promise<number> {
     distinct: ['userId'],
   });
   return rows.length;
-}
-
-export async function topActiveUsers(limit = 10) {
-  const rows = await prisma.$queryRaw<
-    { id: string; name: string; email: string; events: number; last_seen: Date | null }[]
-  >`
-    SELECT u.id, u.name, u.email, COUNT(e.id)::int AS events, MAX(e."createdAt") AS last_seen
-    FROM users u
-    JOIN activity_events e ON e."userId" = u.id
-    WHERE u.role = 'STUDENT' AND e."createdAt" >= NOW() - INTERVAL '30 days'
-    GROUP BY u.id, u.name, u.email
-    ORDER BY events DESC
-    LIMIT ${limit}
-  `;
-  return rows;
 }
 
 // ---------------------------------------------------------------------------

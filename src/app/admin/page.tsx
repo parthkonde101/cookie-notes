@@ -1,15 +1,11 @@
 import type { Metadata } from 'next';
 import { cookies } from 'next/headers';
-import Link from 'next/link';
 import {
   Activity,
-  BookOpen,
   Flame,
   UserCheck,
-  UserPlus,
   Users,
 } from 'lucide-react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageContainer, PageHeader } from '@/components/layout/page-header';
 import { StatCard } from '@/components/admin/stat-card';
 import {
@@ -24,7 +20,6 @@ import { adminOverview } from '@/lib/analytics/queries';
 import { activeByMonth, registrationsByMonth, studyHours, studySubjects } from '@/lib/analytics/study';
 import { CHART_SETTINGS_COOKIE } from '@/lib/analytics/chart-settings';
 import { readChartChoices } from '@/lib/analytics/chart-settings-server';
-import { relativeTime } from '@/lib/utils';
 
 export const metadata: Metadata = { title: 'Admin overview' };
 export const dynamic = 'force-dynamic';
@@ -76,12 +71,6 @@ export default async function AdminDashboard() {
             />
           )}
           <StatCard
-            label="New this week"
-            value={stats.newThisWeek}
-            icon={UserPlus}
-            hint={`${stats.newToday} today`}
-          />
-          <StatCard
             label="Active today"
             value={today.students}
             icon={Activity}
@@ -107,67 +96,6 @@ export default async function AdminDashboard() {
           <RegistrationsByMonthCard initial={registrationsMonthly} />
         </div>
       </section>
-
-      <div className="mt-6 grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2">
-              <BookOpen className="size-4" />
-              Most viewed note
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {stats.mostViewedNote ? (
-              <Link
-                href={`/admin/notes/${stats.mostViewedNote.id}`}
-                className="block rounded-md border border-border p-3 transition-colors hover:border-primary/40"
-              >
-                <p className="font-medium">{stats.mostViewedNote.title}</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {stats.mostViewedNote.subject.name} · {stats.mostViewedNote.viewCount} views
-                </p>
-              </Link>
-            ) : (
-              <p className="text-sm text-muted-foreground">No note has been opened yet.</p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2">
-              <Users className="size-4" />
-              Most active students
-            </CardTitle>
-            <CardDescription>By recorded events in the last 30 days</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-1">
-            {stats.mostActiveUsers.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No activity recorded yet.</p>
-            ) : (
-              stats.mostActiveUsers.map((student, index) => (
-                <Link
-                  key={student.id}
-                  href={`/admin/users/${student.id}`}
-                  className="-mx-2 flex items-center gap-3 rounded-md px-2 py-2 transition-colors hover:bg-secondary/60"
-                >
-                  <span className="w-4 text-xs tabular-nums text-muted-foreground">{index + 1}</span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{student.name}</span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {student.email}
-                    </span>
-                  </span>
-                  <span className="shrink-0 text-right text-xs text-muted-foreground">
-                    <span className="block tabular-nums">{student.events} events</span>
-                    <span className="block">{relativeTime(student.last_seen)}</span>
-                  </span>
-                </Link>
-              ))
-            )}
-          </CardContent>
-        </Card>
-      </div>
     </PageContainer>
   );
 }
