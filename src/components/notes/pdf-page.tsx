@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RotateCw, TriangleAlert } from 'lucide-react';
-import { drawWatermark, type WatermarkIdentity } from '@/components/notes/watermark';
+import { drawFooter, footerHeight, FOOTER_FRACTION, type WatermarkIdentity } from '@/components/notes/watermark';
 
 /**
  * One page of the protected reader.
@@ -138,7 +138,10 @@ export function PdfPage({
         // Fit the page to the available width, then step the resolution back
         // if the resulting bitmap would be too large for the browser to hold.
         let scale = (cssWidth / base.width) * dpr;
-        const area = base.width * scale * (base.height * scale);
+        // The footer strip (when there is one) is extra height under the page, so the
+        // resolution clamp has to count it.
+        const stripFraction = identity ? FOOTER_FRACTION : 0;
+        const area = base.width * scale * (base.height * scale + base.width * scale * stripFraction);
         if (area > MAX_CANVAS_PIXELS) {
           scale *= Math.sqrt(MAX_CANVAS_PIXELS / area);
         }
@@ -146,20 +149,25 @@ export function PdfPage({
         const viewport = page.getViewport({ scale });
         const pixelWidth = Math.max(1, Math.floor(viewport.width));
         const pixelHeight = Math.max(1, Math.floor(viewport.height));
+        // The page is drawn untouched at the top of the canvas; the footer lives in a
+        // strip added below it, so it can never cover anything the page has.
+        // Canvas pixels per CSS pixel, after any step-back for the browser's size limit.
+        const density = pixelWidth / cssWidth;
+        const strip = identity ? footerHeight(pixelWidth, density) : 0;
 
         if (cancelled) return;
 
         // Safe to resize: nothing is rendering into this canvas right now.
         canvas.width = pixelWidth;
-        canvas.height = pixelHeight;
-        setRatio(pixelWidth / pixelHeight);
+        canvas.height = pixelHeight + strip;
+        setRatio(pixelWidth / (pixelHeight + strip));
 
         const ctx = canvas.getContext('2d', { alpha: false });
         if (!ctx) throw new Error('This browser did not provide a 2D canvas context.');
 
         // Resizing leaves the bitmap transparent; PDF pages assume white paper.
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, pixelWidth, pixelHeight);
+        ctx.fillRect(0, 0, pixelWidth, pixelHeight + strip);
 
         const task = page.render({ canvasContext: ctx, viewport });
         taskRef.current = task;
@@ -170,11 +178,10 @@ export function PdfPage({
         // The effect may have been torn down while the page was painting.
         if (cancelled) return;
 
-        // Burn the watermark into the same pixels as the content, after the
-        // page has finished painting so nothing can render over it. It sizes
+        // Draw the footer into the strip, after the page has finished painting. It sizes
         // itself from the canvas it is given, so a resolution stepped back for
-        // Safari's limit produces the same mark in the same place.
-        if (identity) drawWatermark(ctx, pixelWidth, pixelHeight, identity);
+        // Safari's limit produces the same footer in the same place.
+        if (identity) drawFooter(ctx, pixelWidth, pixelHeight, identity, pageNumber, density);
 
         taskRef.current = null;
         setStatus('done');

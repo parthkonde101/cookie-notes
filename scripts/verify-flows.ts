@@ -2,13 +2,14 @@
  * End-to-end verification of the security-critical user journeys.
  *
  *   npm run build
- *   EMAIL_VERIFICATION_REQUIRED=true NOTE_WATERMARK_ENABLED=true npm run start   # one terminal
- *   EMAIL_VERIFICATION_REQUIRED=true NOTE_WATERMARK_ENABLED=true npm run verify:flows   # another
+ *   EMAIL_VERIFICATION_REQUIRED=true npm run start   # one terminal
+ *   EMAIL_VERIFICATION_REQUIRED=true npm run verify:flows   # another
  *
- * This suite covers the college-email verification journeys and the watermark,
- * both of which are switched OFF by default (see .env.example), so the server
- * AND this process must be started with the two settings above. The behaviour
- * with them off is covered by `npm run verify:no-verification`.
+ * This suite covers the college-email verification journeys, which are switched
+ * OFF by default (see .env.example), so the server AND this process must be
+ * started with that setting. The footer watermark is ON by default and this suite
+ * expects it. The behaviour with verification off is covered by
+ * `npm run verify:no-verification`, and the footer by `npm run verify:watermark`.
  *
  * Everything below runs against a real HTTP server with real cookies, a real
  * database and real files in storage. Nothing is mocked. Test accounts use the
@@ -34,11 +35,11 @@ import { makeTestPdf } from './make-test-pdf';
 
 const BASE_URL = process.env.VERIFY_BASE_URL ?? 'http://localhost:3000';
 
-/** This suite exercises verification and watermarks, so it needs both switched on. */
-if (process.env.EMAIL_VERIFICATION_REQUIRED !== 'true' || process.env.NOTE_WATERMARK_ENABLED !== 'true') {
+/** This suite exercises verification and the footer, so verification must be on and the footer not switched off. */
+if (process.env.EMAIL_VERIFICATION_REQUIRED !== 'true' || /^(false|0)$/i.test((process.env.NOTE_WATERMARK_ENABLED ?? '').trim())) {
   console.error(
-    '\nRun this suite — and the server under test — with EMAIL_VERIFICATION_REQUIRED=true and ' +
-      'NOTE_WATERMARK_ENABLED=true. Both are off by default.\n',
+    '\nRun this suite — and the server under test — with EMAIL_VERIFICATION_REQUIRED=true, and ' +
+      'without NOTE_WATERMARK_ENABLED=false. Verification is off by default.\n',
   );
   process.exit(3);
 }
@@ -1076,17 +1077,20 @@ async function main() {
     const allowedBody = await body<{
       token?: string;
       contentUrl?: string;
-      watermark?: { email?: string; sessionRef?: string };
+      watermark?: { reference?: string; issuedAt?: string };
     }>(allowed);
 
     check('the granted student can open the note', allowed.status === 200);
     check('a short-lived view token is issued', Boolean(allowedBody.token));
     check(
-      'the watermark carries the reader’s own identity',
-      allowedBody.watermark?.email === STUDENT_EMAIL,
-      allowedBody.watermark?.email,
+      'the footer carries an opaque account reference, not the reader’s email',
+      /^CN-[0-9A-HJKMNP-TV-Z]{8}$/.test(allowedBody.watermark?.reference ?? ''),
+      allowedBody.watermark?.reference,
     );
-    check('the watermark carries a session reference', Boolean(allowedBody.watermark?.sessionRef));
+    check(
+      'and nothing identifying is sent for it',
+      !JSON.stringify(allowedBody).includes(STUDENT_EMAIL) && Object.keys(allowedBody.watermark ?? {}).sort().join() === 'issuedAt,reference',
+    );
 
     viewToken = allowedBody.token ?? '';
 

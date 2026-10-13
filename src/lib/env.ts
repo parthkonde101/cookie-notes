@@ -59,6 +59,21 @@ export function readEmailVerificationSetting(raw: string | undefined): {
   return { required: true, source: 'invalid' };
 }
 
+/**
+ * How NOTE_WATERMARK_ENABLED is read — the footer on every page of a note or paper.
+ *
+ *   unset / empty      → ON (the footer is part of the reader)
+ *   false / 0          → OFF
+ *   true / 1           → ON
+ *   anything else      → ON, because a typo must not quietly remove attribution
+ *
+ * Case and surrounding spaces are ignored.
+ */
+export function readWatermarkSetting(raw: string | undefined): boolean {
+  const value = (raw ?? '').trim().toLowerCase();
+  return !(value === 'false' || value === '0');
+}
+
 export const env = {
   get isProduction() {
     return process.env.NODE_ENV === 'production';
@@ -136,16 +151,16 @@ export const env = {
 
   notes: {
     /**
-     * Whether the reader burns the reader's email onto each page and prints a
-     * "Licensed to…" line under it. OFF for the free launch; set to `true` to
-     * bring it back. Only the exact values `true` and `1` turn it on.
+     * Whether the reader draws a small footer on every page of a note or
+     * previous-year paper: "cookienotes.app" on the left, the reader's opaque
+     * account reference and the page number on the right. ON by default; set
+     * `false` (or `0`) to switch it off, and the page is drawn exactly as the PDF
+     * has it. See `readWatermarkSetting` for how the value is read.
      *
-     * When off, the view-token response carries no watermark at all, so no email
-     * is even sent to the browser for it.
+     * When off, the view-token response carries no watermark at all.
      */
     get watermark(): boolean {
-      const value = (process.env.NOTE_WATERMARK_ENABLED ?? '').trim().toLowerCase();
-      return value === 'true' || value === '1';
+      return readWatermarkSetting(process.env.NOTE_WATERMARK_ENABLED);
     },
   },
 

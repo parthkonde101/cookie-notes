@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { env } from '@/lib/env';
+import { accountReference } from '@/lib/access/account-reference';
 import { toErrorResponse, Errors } from '@/lib/errors';
 import { contextFromHeaders } from '@/lib/request';
 import { requireApiUser } from '@/lib/auth/guards';
@@ -61,16 +62,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         token,
         expiresAt: expiresAt.toISOString(),
         contentUrl: `/api/notes/${note.id}/content?t=${encodeURIComponent(token)}`,
-        // Watermarks are switched off for the free launch (NOTE_WATERMARK_ENABLED).
-        // With them off nothing about the reader is sent for one — not even the
-        // email — and the viewer paints the page exactly as the PDF has it.
+        // The footer on every page: the site, this account's opaque reference and the page
+        // number (the page number is added by the viewer). The reference is derived HERE
+        // from the authenticated session's user — the browser never supplies it — and
+        // contains no email, name or id. Off (NOTE_WATERMARK_ENABLED=false): null.
         watermark: env.notes.watermark
-          ? {
-              email: user.email,
-              name: user.name,
-              sessionRef: session.id.slice(-8).toUpperCase(),
-              issuedAt: new Date().toISOString(),
-            }
+          ? { reference: accountReference(user.id), issuedAt: new Date().toISOString() }
           : null,
       },
       { headers: { 'Cache-Control': 'no-store' } },

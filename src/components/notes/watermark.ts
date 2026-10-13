@@ -1,121 +1,97 @@
-export interface WatermarkIdentity {
-  email: string;
-  sessionRef: string;
-  dateLabel: string;
-}
-
 /**
- * Paints the reader's email diagonally across a rendered page.
+ * The footer on every page of a note or previous-year paper.
+ *
+ *     cookienotes.app                                   CN-7K2M9QXA · Page 3
  *
  * ## What it is for
  *
- * Not prevention — attribution. A student is meant to read the whole unit
- * freely, which means a determined one can always photograph the screen or use
- * Safari's full-page capture. What this guarantees is that whatever comes out
- * the other end still carries the address of the account that opened it.
+ * Not prevention — attribution. A browser cannot stop a screenshot, and this
+ * does not try to; what it guarantees is that whatever comes out the other end
+ * still says which account read it. The reference is opaque: it contains no
+ * email, name or id, and an admin looks it up on the users page.
+ *
+ * ## Where it goes
+ *
+ * In a strip added BELOW the page, inside the same white sheet. The page itself
+ * is drawn first, untouched, at the top of the canvas; the strip is extra height
+ * under it. So the footer can never cover text, an equation, a diagram or the
+ * page's own printed page number — wherever a PDF puts them, however narrow its
+ * margins, whatever its size or orientation — and the document's own layout is
+ * exactly what it was. The strip scales with the page's width, so it is the same
+ * proportion on A4, on a landscape slide and on a phone, and at every zoom.
  *
  * ## Why it is drawn here and not in the DOM
  *
- * It is composited into the page canvas itself, in the same pixels as the
- * content, after pdf.js has finished painting. An HTML overlay would be one
- * `display: none` away from a clean copy and would not necessarily appear in a
- * canvas capture; this cannot be separated from the page without also
- * destroying the page.
+ * It is composited into the page canvas, in the same pixels as the page, so it
+ * is part of any capture of the page and cannot be hidden with a style rule.
  *
  * ## Weight
  *
- * Near-black at low alpha, regular weight, one line. The mark has to be legible
- * in a screenshot taken weeks later, and no heavier than that — these are
- * somebody's revision notes, and every extra gram of ink is read through.
- *
- * ## Why exactly one mark, and only the email
- *
- * Earlier this tiled two lines of identity across the whole page. That was
- * heavier to read through than it was useful: repetition only helps against
- * cropping, and someone cropping a page has already lost the content they
- * wanted. One large diagonal line survives an ordinary screenshot just as well
- * and leaves the notes legible, which is what the page is actually for.
- *
- * The line carries the email and nothing else. A name, a session reference or a
- * timestamp would add no attribution the email does not already give, and every
- * extra character is more ink over somebody's notes.
- *
- * Note this never touches the Cookie Notes branding already inside the source
- * PDFs — that is page content, rendered by pdf.js before this runs.
+ * One line, small, mid-grey on white: readable when you look for it, ignorable
+ * when you read. Switched off with NOTE_WATERMARK_ENABLED=false, in which case no
+ * strip is added and the page is exactly as the PDF has it.
  */
-export function drawWatermark(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  identity: WatermarkIdentity,
-): void {
-  const email = identity.email.trim();
-  if (!email) return;
 
-  const diagonal = Math.hypot(width, height);
-
-  // Sized against the canvas, never the viewport: the mark is measured and
-  // fitted to a fixed fraction of this page's own diagonal, so it lands the
-  // same way on A4, on a wide landscape scan and on a half-height page — and
-  // it stays put when the browser zooms or the render resolution is stepped
-  // back for Safari's canvas limit.
-  const target = diagonal * 0.62;
-
-  ctx.save();
-
-  const probe = 100;
-  ctx.font = `400 ${probe}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
-  const measured = ctx.measureText(email).width || 1;
-
-  // Clamped so a very long address cannot shrink to nothing and a very short
-  // one cannot grow into a billboard.
-  const fontSize = Math.round(
-    Math.min(Math.max((probe * target) / measured, diagonal * 0.028), diagonal * 0.085),
-  );
-
-  // Regular weight, not semibold: at this size the mark is already impossible
-  // to miss, and the extra stroke width was reading as a grey slab laid over
-  // the notes rather than as a line of text behind them.
-  ctx.font = `400 ${fontSize}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-
-  // The page's own diagonal, so the mark runs corner to corner whatever the
-  // aspect ratio rather than sitting at a fixed angle that only suits portrait.
-  // Positive angle: top-left down to bottom-right, following the reading eye.
-  ctx.translate(width / 2, height / 2);
-  ctx.rotate(Math.atan2(height, width));
-
-  // Near-black ink, laid on once.
-  //
-  // `multiply` behaves like ink on paper: it darkens what is under it and can
-  // never brighten it, so on white paper this is the whole watermark and it
-  // reads as dark text rather than as grey fog.
-  ctx.globalCompositeOperation = 'multiply';
-  ctx.fillStyle = 'rgba(8, 8, 10, 0.10)';
-  ctx.fillText(email, 0, 0);
-
-  // The lift, for pages that are themselves near-black — dark slides, dark
-  // note paper, photographed boards — where ink alone leaves nothing to read.
-  //
-  // On Cookie Notes this pass is not a fallback, it is the watermark: the real
-  // notes are dark throughout, so the ink above barely registers and everything
-  // legible comes from here. Measured against a no-watermark render of a real
-  // unit, 0.05 gave a mean luminance change of 7 and did not survive a 50%
-  // downscale; 0.08 gives 12 and does.
-  //
-  // Still deliberately weaker than the dark pass. At anything like equal
-  // strength the two fight each other on white paper — the lift cancels the ink
-  // and the result is a washed-out grey — so this is the number to raise if
-  // dark pages ever need more, and the one to leave alone if light ones do.
-  ctx.globalCompositeOperation = 'screen';
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-  ctx.fillText(email, 0, 0);
-
-  ctx.restore();
+export interface WatermarkIdentity {
+  /** The opaque account reference, e.g. `CN-7K2M9QXA`. */
+  reference: string;
 }
 
-/** The small, always-visible footer line under the page. */
-export function watermarkCaption(identity: WatermarkIdentity): string {
-  return `Licensed to ${identity.email} · Session ${identity.sessionRef} · ${identity.dateLabel}`;
+/** The strip's height as a fraction of the page's width (about 25 px on a 780 px page). */
+const STRIP_FRACTION = 0.032;
+/** ...but never thinner than this many CSS pixels, so the text stays legible on a phone. */
+const MIN_STRIP_CSS_PX = 20;
+const SITE = 'cookienotes.app';
+
+/**
+ * Extra canvas height, in canvas pixels, that the footer needs for a page this wide.
+ *
+ * `density` is canvas pixels per CSS pixel (the device pixel ratio, after any
+ * resolution step-back), so the minimum is a real, readable size on every screen.
+ */
+export function footerHeight(pageWidth: number, density = 1): number {
+  return Math.max(Math.round(MIN_STRIP_CSS_PX * density), Math.round(pageWidth * STRIP_FRACTION));
+}
+
+/** The same fraction, for sizing a page before its width is known in pixels. */
+export const FOOTER_FRACTION = STRIP_FRACTION;
+
+/**
+ * Draws the footer into the strip under a page.
+ *
+ * @param pageHeight the height of the PDF page itself — the strip starts here
+ * @param density    canvas pixels per CSS pixel; see `footerHeight`
+ */
+export function drawFooter(
+  ctx: CanvasRenderingContext2D,
+  pageWidth: number,
+  pageHeight: number,
+  identity: WatermarkIdentity,
+  pageNumber: number,
+  density = 1,
+): void {
+  const strip = footerHeight(pageWidth, density);
+  const reference = identity.reference.trim();
+  if (!reference) return;
+
+  const fontPx = Math.max(Math.round(8 * density), Math.round(strip * 0.44));
+  const margin = Math.round(Math.max(strip * 0.9, pageWidth * 0.04));
+  const middle = pageHeight + strip / 2;
+
+  ctx.save();
+  // A hairline between the page and its footer, so a page whose content runs to the
+  // edge still reads as a page followed by a footer.
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.07)';
+  ctx.fillRect(margin, pageHeight, pageWidth - margin * 2, Math.max(1, Math.round(strip * 0.04)));
+
+  ctx.font = `${fontPx}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  ctx.fillStyle = '#8a8a8a';
+  ctx.textBaseline = 'middle';
+
+  ctx.textAlign = 'left';
+  ctx.fillText(SITE, margin, middle);
+
+  ctx.textAlign = 'right';
+  ctx.fillText(`${reference} · Page ${pageNumber}`, pageWidth - margin, middle);
+  ctx.restore();
 }

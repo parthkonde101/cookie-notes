@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/feedback';
 import { LoadingMessage } from '@/components/notes/loading-message';
 import { MAX_PAGE_WIDTH, PdfPage } from '@/components/notes/pdf-page';
-import { watermarkCaption, type WatermarkIdentity } from '@/components/notes/watermark';
+import type { WatermarkIdentity } from '@/components/notes/watermark';
 import { cn } from '@/lib/utils';
 
 interface ViewerProps {
@@ -43,11 +43,11 @@ interface OpenResponse {
   viewId: string | null;
   contentUrl: string;
   /**
-   * The mark to paint, or null when watermarks are off (NOTE_WATERMARK_ENABLED).
-   * Null means no identity is drawn and no caption is shown — the page is
-   * painted exactly as the PDF has it.
+   * The footer to draw under every page — the reader's opaque account reference — or
+   * null when it is switched off (NOTE_WATERMARK_ENABLED=false). Null means no strip
+   * is added and the page is painted exactly as the PDF has it.
    */
-  watermark: { email: string; name: string; sessionRef: string; issuedAt: string } | null;
+  watermark: { reference: string; issuedAt: string } | null;
 }
 
 type Status = 'loading' | 'ready' | 'error';
@@ -178,19 +178,7 @@ export function NoteViewer({
         if (cancelled) return;
 
         viewIdRef.current = open.viewId;
-        setIdentity(
-          open.watermark
-            ? {
-                email: open.watermark.email,
-                sessionRef: open.watermark.sessionRef,
-                dateLabel: new Date(open.watermark.issuedAt).toLocaleDateString('en-GB', {
-                  day: '2-digit',
-                  month: 'short',
-                  year: 'numeric',
-                }),
-              }
-            : null,
-        );
+        setIdentity(open.watermark ? { reference: open.watermark.reference } : null);
 
         // 2. Fetch the bytes. They never touch a public URL and are not cached.
         const contentResponse = await fetch(open.contentUrl, { cache: 'no-store' });
@@ -546,12 +534,6 @@ export function NoteViewer({
               />
             ))}
         </div>
-
-        {identity && status === 'ready' && (
-          <p className="mt-8 text-center text-[11px] text-muted-foreground">
-            {watermarkCaption(identity)}
-          </p>
-        )}
 
         {/* Blur the content when the window loses focus. */}
         {obscured && (

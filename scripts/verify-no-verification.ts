@@ -1,6 +1,6 @@
 /**
  * Verifies simple registration — EMAIL_VERIFICATION_REQUIRED off, the default —
- * the watermark being off, and that switching both back on restores the previous
+ * the footer carrying no email, and that switching verification back on restores the previous
  * behaviour.
  *
  *   npm run build
@@ -164,7 +164,7 @@ const handshakeProbe = {
 const ownedServers: OwnedServer[] = [];
 
 async function main() {
-  console.log(`\nVerifying simple registration, no watermark, and the switch back\n${'─'.repeat(56)}`);
+  console.log(`\nVerifying simple registration, the reference-only footer, and the switch back\n${'─'.repeat(56)}`);
   const [identity] = await prisma.$queryRaw<{ db: string; addr: string | null; foreign_users: bigint }[]>`
     SELECT current_database() AS db, host(inet_server_addr()) AS addr,
            (SELECT count(*) FROM users WHERE email NOT LIKE ${`${PREFIX}+%`}) AS foreign_users`;
@@ -223,8 +223,8 @@ async function main() {
       else process.env.NOTE_WATERMARK_ENABLED = value;
       return env.notes.watermark;
     };
-    check('the watermark is OFF when unset, empty, "false", "yes" or anything unrecognised', [undefined, '', 'false', 'yes', 'on', '2'].every((v) => !watermark(v)));
-    check('and ON only for "true" or "1"', ['true', 'TRUE', ' 1 '].every((v) => watermark(v)));
+    check('the footer is ON when unset, empty, "true", "1", or anything unrecognised', [undefined, '', 'true', '1', 'yes', 'on', '2', 'flase'].every((v) => watermark(v)));
+    check('and OFF only for "false" or "0" (case and spaces ignored)', ['false', 'FALSE', ' 0 ', ' False '].every((v) => !watermark(v)));
     if (keep === undefined) delete process.env.NOTE_WATERMARK_ENABLED;
     else process.env.NOTE_WATERMARK_ENABLED = keep;
   }
@@ -461,13 +461,13 @@ async function main() {
     check('the catalogue shows no "verify your email" banner', catalogue.status === 200 && !/verify your (college )?email/i.test(catalogue.html));
   }
 
-  section('8. No watermark — and nothing else about access changed');
+  section('8. The footer carries no email — and nothing else about access changed');
   {
     const student = await signIn(pendingUser);
     const open = await student.post(`/api/notes/${freeNote.id}/view-token`);
     const text = await open.text();
-    const opened = JSON.parse(text) as { watermark?: unknown; viewId?: string };
-    check('the view-token response carries no watermark (null)', opened.watermark === null);
+    const opened = JSON.parse(text) as { watermark?: { reference?: string } | null; viewId?: string };
+    check('the view-token response carries an opaque account reference for the footer', /^CN-[0-9A-HJKMNP-TV-Z]{8}$/.test(opened.watermark?.reference ?? ''), JSON.stringify(opened.watermark));
     check("and not the reader's email, name or session reference anywhere in it", !text.includes(pendingUser.email) && !text.includes(pendingUser.name) && !/sessionRef/i.test(text));
     check('a per-reader view record is still kept', Boolean(opened.viewId) && (await prisma.noteView.count({ where: { userId: pendingUser.id, noteId: freeNote.id } })) >= 1);
     const grantedPaper = await prisma.entitlement.create({ data: { userId: legacyUser.id, scope: 'SUBJECT', targetKey: `SUBJECT:${subject.id}`, subjectId: subject.id, source: 'ADMIN_GRANT' } });
@@ -475,7 +475,7 @@ async function main() {
     const paper = await legacyClient.post(`/api/pyqs/${pyq.id}/view-token`);
     const paperText = await paper.text();
     check('a previous-year paper opens for a granted student', paper.status === 200);
-    check('and carries no watermark either', (JSON.parse(paperText) as { watermark?: unknown }).watermark === null && !paperText.includes(legacyUser.email));
+    check('and carries the same kind of footer reference, never the email', /^CN-[0-9A-HJKMNP-TV-Z]{8}$/.test((JSON.parse(paperText) as { watermark?: { reference?: string } }).watermark?.reference ?? '') && !paperText.includes(legacyUser.email));
     await prisma.entitlement.delete({ where: { id: grantedPaper.id } });
     check('the storage key is never sent to the browser', !text.includes(freeNote.storageKey) && !paperText.includes(pyqKey));
 
@@ -638,7 +638,7 @@ async function main() {
   // =========================================================================
   section('12. Switched back on: the previous behaviour, restored');
   {
-    const ON = await startServer({ EMAIL_VERIFICATION_REQUIRED: 'true', NOTE_WATERMARK_ENABLED: 'true', OPEN_ACCESS_MODE: 'false' });
+    const ON = await startServer({ EMAIL_VERIFICATION_REQUIRED: 'true', OPEN_ACCESS_MODE: 'false' });
     await placeFiles(ON);
     BASE_URL = ON.baseUrl;
 
@@ -687,8 +687,8 @@ async function main() {
     const verified = await make('on-verified', { emailVerifiedAt: new Date() }, 'mitwpu.edu.in');
     const verifiedClient = await signIn(verified);
     const open = await verifiedClient.post(`/api/notes/${freeNote.id}/view-token`);
-    const opened = await body<{ watermark?: { email?: string; sessionRef?: string } | null; contentUrl?: string }>(open);
-    check('a verified student reads, and the watermark is back with NOTE_WATERMARK_ENABLED=true', open.status === 200 && opened.watermark?.email === verified.email && Boolean(opened.watermark?.sessionRef));
+    const opened = await body<{ watermark?: { reference?: string } | null; contentUrl?: string }>(open);
+    check('a verified student reads, with the footer reference', open.status === 200 && /^CN-[0-9A-HJKMNP-TV-Z]{8}$/.test(opened.watermark?.reference ?? ''));
     check('and the file still arrives whole', sha256(Buffer.from(await (await verifiedClient.request(opened.contentUrl!)).arrayBuffer())) === sha(freeNote));
   }
 
