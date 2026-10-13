@@ -1,5 +1,5 @@
 /**
- * The footer on every page of a note or previous-year paper.
+ * The footer printed on every page of a note or previous-year paper.
  *
  *     cookienotes.app                                   CN-7K2M9QXA · Page 3
  *
@@ -10,26 +10,36 @@
  * still says which account read it. The reference is opaque: it contains no
  * email, name or id, and an admin looks it up on the users page.
  *
- * ## Where it goes
+ * ## It is printed on the page, in the page's own units
  *
- * In a strip added BELOW the page, inside the same white sheet. The page itself
- * is drawn first, untouched, at the top of the canvas; the strip is extra height
- * under it. So the footer can never cover text, an equation, a diagram or the
- * page's own printed page number — wherever a PDF puts them, however narrow its
- * margins, whatever its size or orientation — and the document's own layout is
- * exactly what it was. The strip scales with the page's width, so it is the same
- * proportion on A4, on a landscape slide and on a phone, and at every zoom.
+ * The footer is drawn into the page's canvas after pdf.js has finished painting,
+ * so it is part of the page's pixels: it takes no space, adds no height and cannot
+ * be removed with a style rule. And it is laid out in the PAGE'S coordinates —
+ * PDF units (points, 1/72 in), measured from the page's own edges — never in
+ * screen pixels. Its font size, padding and position are functions of the page's
+ * width and height alone.
  *
- * ## Why it is drawn here and not in the DOM
+ * The raster resolution is a separate thing. pdf.js paints the page at some scale
+ * (zoom × the width available × the device's pixel ratio, stepped back for the
+ * browser's canvas limit); `drawFooter` is given that same scale and draws under
+ * the same transform, exactly as pdf.js does for the page's own content. So at 50%
+ * zoom the footer is half the size of the footer at 100%, at 175% it is 1.75 times,
+ * and in every case it occupies the same place relative to the page. Nothing about
+ * it — size, position, which pieces are shown — depends on the zoom.
  *
- * It is composited into the page canvas, in the same pixels as the page, so it
- * is part of any capture of the page and cannot be hidden with a style rule.
+ * It is small and semi-transparent grey with no background, so it reads like a
+ * printed footer and stays out of the way of the notes; where it overlaps a
+ * document's own marks it is faint enough to leave them readable.
  *
- * ## Weight
+ * ## Respecting a margin line
  *
- * One line, small, mid-grey on white: readable when you look for it, ignorable
- * when you read. Switched off with NOTE_WATERMARK_ENABLED=false, in which case no
- * strip is added and the page is exactly as the PDF has it.
+ * Many notes are drawn on ruled paper with a red margin line down the left. The
+ * left text must start to the right of that line, so the page is probed for one
+ * (see `findMarginLine`) — once per page, at a fixed resolution, so the answer
+ * does not depend on the zoom — and the text is placed just beyond it, in page
+ * units. If there is no line the text starts at the ordinary left padding.
+ *
+ * Switched off with NOTE_WATERMARK_ENABLED=false, in which case nothing is drawn.
  */
 
 export interface WatermarkIdentity {
@@ -37,61 +47,166 @@ export interface WatermarkIdentity {
   reference: string;
 }
 
-/** The strip's height as a fraction of the page's width (about 25 px on a 780 px page). */
-const STRIP_FRACTION = 0.032;
-/** ...but never thinner than this many CSS pixels, so the text stays legible on a phone. */
-const MIN_STRIP_CSS_PX = 20;
 const SITE = 'cookienotes.app';
+const FONT_FAMILY = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+/** Footer text size as a fraction of the page's width (about 8 pt on A4)… */
+const FONT_FRACTION = 0.0135;
+/** …kept between these many page units so it is neither lost on a small page nor loud on a big one. */
+const MIN_FONT = 6;
+const MAX_FONT = 12;
+/** Distance from the bottom and right edges, as a fraction of the page's width (never less than MIN_PAD). */
+const PAD_FRACTION = 0.015;
+const MIN_PAD = 6;
+/** Clear space between a margin line and the left text, and between the two texts. */
+const MARGIN_GAP_FRACTION = 0.012;
+const TEXT_GAP_FRACTION = 0.024;
+/** The text is mid-grey at this opacity: a quiet printed footer, not a stamp. */
+const INK = 'rgba(55, 55, 55, 0.5)';
 
-/**
- * Extra canvas height, in canvas pixels, that the footer needs for a page this wide.
- *
- * `density` is canvas pixels per CSS pixel (the device pixel ratio, after any
- * resolution step-back), so the minimum is a real, readable size on every screen.
- */
-export function footerHeight(pageWidth: number, density = 1): number {
-  return Math.max(Math.round(MIN_STRIP_CSS_PX * density), Math.round(pageWidth * STRIP_FRACTION));
+/** The width, in canvas pixels, the page is rendered at to look for a margin line. The same for every zoom. */
+export const MARGIN_PROBE_WIDTH = 800;
+/** How far into the page, from the left, a margin line is looked for. */
+const MARGIN_SEARCH_FRACTION = 0.35;
+/** A column is a line when this share of the scanned rows is red in it. */
+const LINE_COVERAGE = 0.6;
+/** A "line" wider than this share of the page is a block of colour, not a margin line. */
+const MAX_LINE_FRACTION = 0.0175;
+/** Cap on the pixels read back while looking, so a very large canvas stays cheap. */
+const MAX_SCAN_PIXELS = 1_500_000;
+
+/** Red enough to be a ruled-paper margin line, in any of its usual shades — including a hairline anti-aliased toward white. */
+function isRed(r: number, g: number, b: number): boolean {
+  return r >= 150 && r - g >= 45 && r - b >= 45;
 }
 
-/** The same fraction, for sizing a page before its width is known in pixels. */
-export const FOOTER_FRACTION = STRIP_FRACTION;
+/**
+ * Where a red vertical margin line runs down the left of a rendered page, as the x
+ * coordinate (in that canvas's pixels) of its RIGHT-hand edge — or null if there is none.
+ *
+ * It reads the rendered page rather than guessing from the PDF: it takes a band of
+ * rows through the middle of the page and looks, in the left part of it, for a column
+ * that is red from top to bottom of the band. Text crossing the line does not hide it
+ * (coverage only has to be 60%), a double line yields its outer edge, and a wide block
+ * of red is ignored as colour, not a margin. If the canvas cannot be read, there is no
+ * line as far as we can tell.
+ */
+export function findMarginLine(ctx: CanvasRenderingContext2D, width: number, height: number): number | null {
+  const regionWidth = Math.floor(width * MARGIN_SEARCH_FRACTION);
+  if (regionWidth < 4 || height < 8 || typeof ctx.getImageData !== 'function') return null;
+
+  const bandHeight = Math.min(Math.floor(height * 0.76), Math.max(40, Math.floor(MAX_SCAN_PIXELS / regionWidth)));
+  const top = Math.floor((height - bandHeight) / 2);
+
+  let data: Uint8ClampedArray;
+  try {
+    data = ctx.getImageData(0, top, regionWidth, bandHeight).data;
+  } catch {
+    return null;
+  }
+
+  const needed = Math.ceil(bandHeight * LINE_COVERAGE);
+  const maxColumns = Math.max(4, Math.round(width * MAX_LINE_FRACTION));
+  let rightmost = -1;
+  let columns = 0;
+  for (let x = 0; x < regionWidth; x += 1) {
+    let hits = 0;
+    for (let y = 0; y < bandHeight; y += 1) {
+      const i = (y * regionWidth + x) * 4;
+      if (isRed(data[i], data[i + 1], data[i + 2])) hits += 1;
+    }
+    if (hits >= needed) {
+      rightmost = x;
+      columns += 1;
+    }
+  }
+  if (rightmost < 0 || columns > maxColumns) return null;
+  return rightmost + 1;
+}
+
+/** The footer's geometry, entirely in page units measured from the page's top-left corner. */
+export interface FooterLayout {
+  /** Text size. */
+  fontSize: number;
+  /** y of the text's baseline. */
+  baseline: number;
+  /** x of the right text's right edge. */
+  rightX: number;
+  right: string;
+  /** x of the left text's left edge, or null if the page is too narrow to hold both texts. */
+  leftX: number | null;
+  left: string;
+}
 
 /**
- * Draws the footer into the strip under a page.
+ * Where everything goes, in page units. It depends only on the page's size, the
+ * margin line (also in page units) and the text — never on the zoom or the
+ * resolution — so it is identical at every scale.
  *
- * @param pageHeight the height of the PDF page itself — the strip starts here
- * @param density    canvas pixels per CSS pixel; see `footerHeight`
+ * @param measure text width in page units at a given font size
+ * @param marginRight x of the right edge of a red margin line, or null if the page has none
+ */
+export function layoutFooter(
+  pageWidth: number,
+  pageHeight: number,
+  right: string,
+  marginRight: number | null,
+  measure: (text: string, fontSize: number) => number,
+): FooterLayout {
+  const pad = Math.max(MIN_PAD, pageWidth * PAD_FRACTION);
+  const fontSize = Math.min(MAX_FONT, Math.max(MIN_FONT, pageWidth * FONT_FRACTION));
+  const rightX = pageWidth - pad;
+  const rightWidth = measure(right, fontSize);
+  const leftWidth = measure(SITE, fontSize);
+
+  // The left text starts at the ordinary padding — or just beyond a margin line, if the page has one.
+  const start = Math.max(pad, marginRight === null ? 0 : marginRight + Math.max(MIN_PAD, pageWidth * MARGIN_GAP_FRACTION));
+  // If both do not fit side by side, the left one is dropped rather than laid over the right one.
+  const fits = start + leftWidth + pageWidth * TEXT_GAP_FRACTION <= rightX - rightWidth;
+
+  return { fontSize, baseline: pageHeight - pad, rightX, right, leftX: fits ? start : null, left: SITE };
+}
+
+/**
+ * Draws the footer onto a page canvas, along the page's bottom edge.
+ *
+ * @param pageWidth  the page's width in PDF units (`getViewport({ scale: 1 }).width`)
+ * @param pageHeight the page's height in PDF units
+ * @param scale      canvas pixels per PDF unit — the viewport scale the page itself was rendered with
+ * @param marginRight x (PDF units) of the right edge of a red margin line on this page, or null
  */
 export function drawFooter(
   ctx: CanvasRenderingContext2D,
   pageWidth: number,
   pageHeight: number,
+  scale: number,
   identity: WatermarkIdentity,
   pageNumber: number,
-  density = 1,
+  marginRight: number | null = null,
 ): void {
-  const strip = footerHeight(pageWidth, density);
   const reference = identity.reference.trim();
-  if (!reference) return;
-
-  const fontPx = Math.max(Math.round(8 * density), Math.round(strip * 0.44));
-  const margin = Math.round(Math.max(strip * 0.9, pageWidth * 0.04));
-  const middle = pageHeight + strip / 2;
+  if (!reference || !(pageWidth > 0) || !(pageHeight > 0) || !(scale > 0)) return;
 
   ctx.save();
-  // A hairline between the page and its footer, so a page whose content runs to the
-  // edge still reads as a page followed by a footer.
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.07)';
-  ctx.fillRect(margin, pageHeight, pageWidth - margin * 2, Math.max(1, Math.round(strip * 0.04)));
+  try {
+    // The same transform pdf.js paints the page with: from here on, one unit is one PDF unit.
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    // Text is measured at its page-unit size, so the answer — and the layout — is the same at every scale.
+    const measure = (text: string, fontSize: number) => {
+      ctx.font = `${fontSize}px ${FONT_FAMILY}`;
+      return ctx.measureText(text).width;
+    };
+    const layout = layoutFooter(pageWidth, pageHeight, `${reference} · Page ${pageNumber}`, marginRight, measure);
 
-  ctx.font = `${fontPx}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-  ctx.fillStyle = '#8a8a8a';
-  ctx.textBaseline = 'middle';
-
-  ctx.textAlign = 'left';
-  ctx.fillText(SITE, margin, middle);
-
-  ctx.textAlign = 'right';
-  ctx.fillText(`${reference} · Page ${pageNumber}`, pageWidth - margin, middle);
-  ctx.restore();
+    ctx.fillStyle = INK;
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = `${layout.fontSize}px ${FONT_FAMILY}`;
+    ctx.textAlign = 'right';
+    ctx.fillText(layout.right, layout.rightX, layout.baseline);
+    if (layout.leftX !== null) {
+      ctx.textAlign = 'left';
+      ctx.fillText(layout.left, layout.leftX, layout.baseline);
+    }
+  } finally {
+    ctx.restore();
+  }
 }

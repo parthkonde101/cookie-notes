@@ -43,9 +43,9 @@ interface OpenResponse {
   viewId: string | null;
   contentUrl: string;
   /**
-   * The footer to draw under every page — the reader's opaque account reference — or
-   * null when it is switched off (NOTE_WATERMARK_ENABLED=false). Null means no strip
-   * is added and the page is painted exactly as the PDF has it.
+   * The footer to draw on every page — the reader's opaque account reference — or
+   * null when it is switched off (NOTE_WATERMARK_ENABLED=false). Null means nothing
+   * is drawn and the page is painted exactly as the PDF has it.
    */
   watermark: { reference: string; issuedAt: string } | null;
 }

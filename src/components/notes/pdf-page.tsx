@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RotateCw, TriangleAlert } from 'lucide-react';
-import { drawFooter, footerHeight, FOOTER_FRACTION, type WatermarkIdentity } from '@/components/notes/watermark';
+import { drawFooter, findMarginLine, MARGIN_PROBE_WIDTH, type WatermarkIdentity } from '@/components/notes/watermark';
 
 /**
  * One page of the protected reader.
@@ -138,36 +138,33 @@ export function PdfPage({
         // Fit the page to the available width, then step the resolution back
         // if the resulting bitmap would be too large for the browser to hold.
         let scale = (cssWidth / base.width) * dpr;
-        // The footer strip (when there is one) is extra height under the page, so the
-        // resolution clamp has to count it.
-        const stripFraction = identity ? FOOTER_FRACTION : 0;
-        const area = base.width * scale * (base.height * scale + base.width * scale * stripFraction);
+        const area = base.width * scale * (base.height * scale);
         if (area > MAX_CANVAS_PIXELS) {
           scale *= Math.sqrt(MAX_CANVAS_PIXELS / area);
         }
 
+        // Where this page's red margin line is, if it has one, in page units — found once
+        // per page at a fixed resolution, so it is the same at every zoom.
+        const marginRight = identity ? await probeMarginLine(doc, page, base.width, registerTask) : null;
+        if (cancelled) return;
+
         const viewport = page.getViewport({ scale });
         const pixelWidth = Math.max(1, Math.floor(viewport.width));
         const pixelHeight = Math.max(1, Math.floor(viewport.height));
-        // The page is drawn untouched at the top of the canvas; the footer lives in a
-        // strip added below it, so it can never cover anything the page has.
-        // Canvas pixels per CSS pixel, after any step-back for the browser's size limit.
-        const density = pixelWidth / cssWidth;
-        const strip = identity ? footerHeight(pixelWidth, density) : 0;
 
         if (cancelled) return;
 
         // Safe to resize: nothing is rendering into this canvas right now.
         canvas.width = pixelWidth;
-        canvas.height = pixelHeight + strip;
-        setRatio(pixelWidth / (pixelHeight + strip));
+        canvas.height = pixelHeight;
+        setRatio(pixelWidth / pixelHeight);
 
         const ctx = canvas.getContext('2d', { alpha: false });
         if (!ctx) throw new Error('This browser did not provide a 2D canvas context.');
 
         // Resizing leaves the bitmap transparent; PDF pages assume white paper.
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, pixelWidth, pixelHeight + strip);
+        ctx.fillRect(0, 0, pixelWidth, pixelHeight);
 
         const task = page.render({ canvasContext: ctx, viewport });
         taskRef.current = task;
@@ -178,10 +175,13 @@ export function PdfPage({
         // The effect may have been torn down while the page was painting.
         if (cancelled) return;
 
-        // Draw the footer into the strip, after the page has finished painting. It sizes
-        // itself from the canvas it is given, so a resolution stepped back for
-        // Safari's limit produces the same footer in the same place.
-        if (identity) drawFooter(ctx, pixelWidth, pixelHeight, identity, pageNumber, density);
+        // Print the footer on the page, along its bottom edge, after the page has finished
+        // painting. It is laid out in the page's own units and drawn under the very scale
+        // the page was just rendered with (`viewport.scale`, which already includes zoom,
+        // the device pixel ratio and any step-back for Safari's limit), so it scales with
+        // the page exactly as the page's own content does. It takes no space and adds no
+        // height: the canvas is exactly the PDF page.
+        if (identity) drawFooter(ctx, base.width, base.height, viewport.scale, identity, pageNumber, marginRight);
 
         taskRef.current = null;
         setStatus('done');
@@ -260,6 +260,61 @@ export function PdfPage({
       )}
     </div>
   );
+}
+
+/**
+ * Margin lines already looked for, by document and page. A page's margin line is a
+ * property of the page, not of how big it is being shown, so it is looked for once.
+ */
+const marginCache = new WeakMap<object, Map<number, number | null>>();
+
+/**
+ * The x coordinate (in page units) of the right edge of a red margin line down the
+ * left of the page, or null if it has none.
+ *
+ * The page is rendered once, off screen, at a fixed width and read back; the
+ * answer is converted to page units and remembered, so changing the zoom neither
+ * repeats the work nor changes the result.
+ */
+async function probeMarginLine(
+  doc: import('pdfjs-dist').PDFDocumentProxy,
+  page: import('pdfjs-dist').PDFPageProxy,
+  pageWidth: number,
+  registerTask: PdfPageProps['registerTask'],
+): Promise<number | null> {
+  let pages = marginCache.get(doc);
+  if (!pages) {
+    pages = new Map();
+    marginCache.set(doc, pages);
+  }
+  if (pages.has(page.pageNumber)) return pages.get(page.pageNumber) ?? null;
+
+  const scale = MARGIN_PROBE_WIDTH / pageWidth;
+  const viewport = page.getViewport({ scale });
+  const probe = document.createElement('canvas');
+  probe.width = Math.max(1, Math.floor(viewport.width));
+  probe.height = Math.max(1, Math.floor(viewport.height));
+  const ctx = probe.getContext('2d', { alpha: false, willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, probe.width, probe.height);
+
+  const task = page.render({ canvasContext: ctx, viewport });
+  const unregister = registerTask(task);
+  try {
+    await task.promise;
+  } catch {
+    // A cancelled or failed probe is not an answer: leave it uncached so the next render
+    // asks again, and let the page itself be drawn (its footer then sits at the plain padding).
+    return null;
+  } finally {
+    unregister();
+  }
+
+  const edge = findMarginLine(ctx, probe.width, probe.height);
+  const result = edge === null ? null : edge / scale;
+  pages.set(page.pageNumber, result);
+  return result;
 }
 
 /**

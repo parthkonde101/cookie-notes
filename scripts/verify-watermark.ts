@@ -16,10 +16,12 @@
  * the database is a disposable local one you have named in VERIFY_DISPOSABLE_DB
  * (scripts/lib/disposable-db.ts). Fixtures are prefixed `wmtest+` / `[wmtest]`.
  *
- * What it cannot check is how the footer LOOKS on a page — that is a browser
- * concern, covered by looking at real pages at several sizes. It does check the
- * drawing code's geometry (the footer sits entirely below the page) with a
- * recording canvas.
+ * What it cannot check is how the footer LOOKS on a real page — that is a browser
+ * concern, covered by measuring real canvases at each zoom. It does check the
+ * drawing code's geometry with a recording canvas: the footer is laid out in the
+ * page's own units and drawn under the page's render scale, so it is identical in
+ * page units at every zoom and grows and shrinks with the page; it sits on the page,
+ * to the right of any red margin line, with no strip and no overlay.
  */
 import 'dotenv/config';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -106,18 +108,48 @@ const handshakeProbe = {
 };
 const servers: OwnedServer[] = [];
 
-/** A canvas that records what is drawn instead of drawing it. */
-function recordingContext() {
-  const calls: { kind: 'text' | 'rect'; text?: string; x: number; y: number; w?: number; h?: number; align: string }[] = [];
-  const state = { font: '', fillStyle: '', textAlign: 'left', textBaseline: 'alphabetic' };
+/**
+ * A canvas that records what is drawn instead of drawing it — in the units the code
+ * passed, together with the transform in force at that moment (so a test can tell page
+ * units from device pixels). `redColumns` makes `getImageData` return a page with red
+ * vertical lines at those x ranges, so margin-line detection runs without a browser.
+ */
+function recordingContext(opts: { redColumns?: [number, number][]; noisyRows?: boolean; red?: [number, number, number] } = {}) {
+  type Call = { kind: 'text' | 'rect'; text?: string; x: number; y: number; align: string; fontPx: number; scale: number; fill: string };
+  const calls: Call[] = [];
+  const state = { font: '', fillStyle: '', textAlign: 'left', textBaseline: 'alphabetic', scale: 1, canvasTouched: false };
+  const stack: number[] = [];
+  const fontPx = () => Number.parseFloat(state.font);
   const ctx = {
-    save() {}, restore() {},
+    save() { stack.push(state.scale); },
+    restore() { state.scale = stack.pop() ?? 1; },
+    setTransform(a: number) { state.scale = a; },
     get font() { return state.font; }, set font(v: string) { state.font = v; },
     get fillStyle() { return state.fillStyle; }, set fillStyle(v: string) { state.fillStyle = v; },
     get textAlign() { return state.textAlign; }, set textAlign(v: string) { state.textAlign = v; },
     get textBaseline() { return state.textBaseline; }, set textBaseline(v: string) { state.textBaseline = v; },
-    fillText(text: string, x: number, y: number) { calls.push({ kind: 'text', text, x, y, align: state.textAlign }); },
-    fillRect(x: number, y: number, w: number, h: number) { calls.push({ kind: 'rect', x, y, w, h, align: state.textAlign }); },
+    get canvas() { state.canvasTouched = true; return {}; },
+    // Like a real canvas, the width is in the font's own units — it does not depend on the transform.
+    // Roughly 0.55 em per character, like a proportional sans-serif.
+    measureText(text: string) { return { width: text.length * fontPx() * 0.55 }; },
+    fillText(text: string, x: number, y: number) { calls.push({ kind: 'text', text, x, y, align: state.textAlign, fontPx: fontPx(), scale: state.scale, fill: state.fillStyle }); },
+    fillRect(x: number, y: number) { calls.push({ kind: 'rect', x, y, align: state.textAlign, fontPx: fontPx(), scale: state.scale, fill: state.fillStyle }); },
+    getImageData(sx: number, sy: number, sw: number, sh: number) {
+      const data = new Uint8ClampedArray(sw * sh * 4).fill(255);
+      const [r, g, b] = opts.red ?? [220, 40, 40];
+      for (let y = 0; y < sh; y += 1) {
+        for (let x = 0; x < sw; x += 1) {
+          const px = sx + x;
+          const red = (opts.redColumns ?? []).some(([from, to]) => px >= from && px < to);
+          // Writing crossing the line: every fifth row is dark instead of red.
+          const crossed = opts.noisyRows && (sy + y) % 5 === 0;
+          const i = (y * sw + x) * 4;
+          if (red && !crossed) { data[i] = r; data[i + 1] = g; data[i + 2] = b; }
+          else if (crossed && red) { data[i] = 20; data[i + 1] = 20; data[i + 2] = 20; }
+        }
+      }
+      return { data };
+    },
   };
   return { ctx: ctx as unknown as CanvasRenderingContext2D, calls, state };
 }
@@ -141,7 +173,7 @@ async function main() {
   await cleanup();
 
   const { accountReference, userIdsForReference, REFERENCE_PATTERN } = await import('../src/lib/access/account-reference');
-  const { drawFooter, footerHeight, FOOTER_FRACTION } = await import('../src/components/notes/watermark');
+  const { drawFooter, findMarginLine, layoutFooter, MARGIN_PROBE_WIDTH } = await import('../src/components/notes/watermark');
   const { readWatermarkSetting } = await import('../src/lib/env');
 
   // --- fixtures ---------------------------------------------------------------
@@ -215,31 +247,87 @@ async function main() {
     check('off only for "false" or "0", ignoring case and spaces', ['false', 'FALSE', ' 0 ', ' False '].every((v) => !readWatermarkSetting(v)));
   }
 
-  section('3. Where it is drawn — entirely below the page');
+  section('3. The footer is printed in page units, so it scales with the page');
   {
-    for (const [label, width, height] of [['A4 portrait', 1240, 1754], ['A4 landscape', 1754, 1240], ['a phone-width page', 360, 509], ['a tall narrow page', 600, 1800], ['a wide short slide', 1800, 600], ['a very small page', 120, 160]] as const) {
-      const { ctx, calls } = recordingContext();
-      drawFooter(ctx, width, height, { reference: 'CN-7K2M9QXA' }, 12);
-      const strip = footerHeight(width);
-      const texts = calls.filter((call) => call.kind === 'text');
-      check(`${label}: two pieces of text, the site on the left and the reference and page on the right`, texts.length === 2 && texts[0].text === 'cookienotes.app' && texts[0].align === 'left' && texts[1].text === 'CN-7K2M9QXA · Page 12' && texts[1].align === 'right', JSON.stringify(texts.map((t) => t.text)));
-      check(`${label}: everything is drawn in the strip below the page, none of it over the page`, calls.every((call) => call.y >= height && call.y <= height + strip), JSON.stringify(calls.map((call) => call.y)) + ` (page ${height}, strip ${strip})`);
-      check(`${label}: the text stays inside the page's width`, texts.every((text) => text.x >= 0 && text.x <= width));
+    const REF = { reference: 'CN-7K2M9QXA' };
+    // Page sizes in PDF points: A4, A4 landscape, US Letter, tall narrow, wide short, a small page.
+    const pages = [['A4 portrait', 595, 842], ['A4 landscape', 842, 595], ['US Letter', 612, 792], ['a tall narrow page', 300, 900], ['a wide short slide', 900, 300], ['a small page', 240, 320]] as const;
+    const zooms = [0.5, 0.75, 1, 1.25, 1.5, 1.75];
+    // What the viewer does: fit the page to ~1000 CSS px, times the zoom, times the device pixel ratio.
+    const scaleFor = (pageWidth: number, zoom: number, dpr: number) => ((1000 * zoom) / pageWidth) * dpr;
+    const footer = (w: number, h: number, scale: number, marginRight: number | null = null, page = 12) => {
+      const rec = recordingContext();
+      drawFooter(rec.ctx, w, h, scale, REF, page, marginRight);
+      return rec;
+    };
+
+    for (const [label, w, h] of pages) {
+      const runs = zooms.flatMap((zoom) => [1, 2].map((dpr) => ({ zoom, dpr, scale: scaleFor(w, zoom, dpr), rec: footer(w, h, scaleFor(w, zoom, dpr)) })));
+      const base = runs.find((r) => r.zoom === 1 && r.dpr === 1)!;
+      const texts = (r: (typeof runs)[number]) => r.rec.calls.filter((c) => c.kind === 'text');
+      const key = (r: (typeof runs)[number]) => JSON.stringify(texts(r).map((t) => [t.text, t.x, t.y, t.align, t.fontPx]));
+
+      check(`${label}: at 50%, 75%, 100%, 125%, 150% and 175% (and 1x/2x screens) the footer is identical in page units — same text, positions, font size`, runs.every((r) => key(r) === key(base)), key(base));
+      check(`${label}: both pieces are there at every zoom — neither disappears`, runs.every((r) => texts(r).length === 2));
+      check(`${label}: it is drawn under the page's own scale — the transform equals the render scale at every zoom`, runs.every((r) => texts(r).every((t) => t.scale === r.scale)));
+      check(`${label}: so on the canvas its device size is the page-unit size times the scale (it grows and shrinks with the page)`, runs.every((r) => texts(r).every((t) => Math.abs(t.fontPx * t.scale - base.rec.calls[0].fontPx * r.scale) < 1e-9)));
+      const doubled = runs.find((r) => r.zoom === 1.5 && r.dpr === 1)!;
+      const half = runs.find((r) => r.zoom === 0.75 && r.dpr === 1)!;
+      check(`${label}: at 150% the footer is exactly twice as big on the canvas as at 75%`, Math.abs((texts(doubled)[0].fontPx * doubled.scale) / (texts(half)[0].fontPx * half.scale) - 2) < 1e-9);
+      check(`${label}: and it sits at the same fraction of the page at every zoom (relative position unchanged)`, runs.every((r) => texts(r).every((t, i) => Math.abs((t.x * t.scale) / (w * r.scale) - texts(base)[i].x / w) < 1e-9 && Math.abs((t.y * t.scale) / (h * r.scale) - texts(base)[i].y / h) < 1e-9)));
+
+      const [first, second] = ['left', 'right'].map((side) => texts(base).find((t) => t.align === side)!);
+      check(`${label}: the site on the left, the reference and page number on the right`, first?.text === 'cookienotes.app' && second?.text === 'CN-7K2M9QXA · Page 12');
+      check(`${label}: it is inside the page, on its bottom edge, equally far from the bottom and right edges`, texts(base).every((t) => t.x > 0 && t.x < w && t.y > h * 0.9 && t.y < h) && Math.abs((h - second.y) - (w - second.x)) < 1e-9, JSON.stringify(texts(base).map((t) => [t.x, t.y])));
+      check(`${label}: the two pieces never overlap`, first.x + 'cookienotes.app'.length * first.fontPx * 0.55 <= second.x - second.text!.length * second.fontPx * 0.55);
+      check(`${label}: no background, no rectangle, nothing drawn below the page`, base.rec.calls.every((c) => c.kind === 'text' && c.y <= h) && !base.rec.state.canvasTouched);
+      check(`${label}: the transform is put back afterwards (page content is unaffected)`, base.rec.state.scale === 1);
     }
-    check('the strip is a fixed proportion of the page width, so it scales with zoom and screen', footerHeight(2000) === Math.round(2000 * FOOTER_FRACTION) && footerHeight(1000) * 2 - footerHeight(2000) <= 1);
-    check('and never collapses to nothing', footerHeight(10) >= 20);
-    check('on a phone the strip keeps a readable minimum in CSS pixels (20 at 1x, 40 at 2x)', footerHeight(300, 1) === 20 && footerHeight(660, 2) === 40 && footerHeight(1680, 2) === 54);
-    const phone = recordingContext();
-    drawFooter(phone.ctx, 660, 900, { reference: 'CN-7K2M9QXA' }, 2, 2);
-    check('and its text is at least 8 CSS pixels (16 canvas pixels at 2x)', Number.parseInt(phone.state.font, 10) >= 16, phone.state.font);
-    const empty = recordingContext();
-    drawFooter(empty.ctx, 800, 1100, { reference: '   ' }, 1);
-    check('no reference means nothing is drawn', empty.calls.length === 0);
-    const { calls } = recordingContext();
-    const rec = recordingContext();
-    drawFooter(rec.ctx, 800, 1100, { reference: 'CN-7K2M9QXA' }, 3);
-    check('the text is small and grey (a quiet footer)', /^\d+px /.test(rec.state.font) && Number.parseInt(rec.state.font, 10) <= Math.round(footerHeight(800) * 0.5) && rec.state.fillStyle === '#8a8a8a', `${rec.state.font} ${rec.state.fillStyle}`);
-    check('and never an email address', ![...calls, ...rec.calls].some((call) => (call.text ?? '').includes('@')));
+
+    const a4 = footer(595, 842, 3.36);
+    check('semi-transparent grey ink — subtle, no opaque stamp', /^rgba\(\d+, \d+, \d+, 0\.5\)$/.test(a4.calls[0].fill), a4.calls[0].fill);
+    check('its size is a fixed fraction of the page width (about 8 pt on A4) and the same for every page of that size', Math.abs(a4.calls[0].fontPx - 595 * 0.0135) < 1e-9 && footer(595, 842, 0.5).calls[0].fontPx === a4.calls[0].fontPx);
+    check('and held between a floor and a ceiling in page units', footer(100, 100, 1).calls[0].fontPx === 6 && footer(5000, 3000, 1).calls[0].fontPx === 12);
+    check('no reference means nothing is drawn', (() => { const r = recordingContext(); drawFooter(r.ctx, 595, 842, 1, { reference: '   ' }, 1); return r.calls.length === 0; })());
+    check('and never an email address', !a4.calls.some((c) => (c.text ?? '').includes('@')));
+    const lay = layoutFooter(595, 842, 'CN-7K2M9QXA · Page 3', null, (text, size) => text.length * size * 0.55);
+    check('layout is a pure function of the page — the same page always gives the same layout', JSON.stringify(lay) === JSON.stringify(layoutFooter(595, 842, 'CN-7K2M9QXA · Page 3', null, (text, size) => text.length * size * 0.55)));
+    check('a page too narrow for both pieces drops the left one because of the PAGE, identically at every zoom', zooms.every((z) => footer(120, 160, scaleFor(120, z, 1)).calls.length === 1));
+
+    // --- the red margin line ---------------------------------------------------
+    // The page is probed at one fixed width (MARGIN_PROBE_WIDTH), whatever the zoom; the answer is converted to page units.
+    const PW = 595;
+    const PH = 842;
+    const probeScale = MARGIN_PROBE_WIDTH / PW;
+    const lineAt = (fromPt: number, toPt: number, extra: { noisyRows?: boolean; red?: [number, number, number] } = {}) => {
+      const pxFrom = Math.round(fromPt * probeScale);
+      const pxTo = Math.max(pxFrom + 1, Math.round(toPt * probeScale));
+      const probe = recordingContext({ redColumns: [[pxFrom, pxTo]], ...extra });
+      const edge = findMarginLine(probe.ctx, MARGIN_PROBE_WIDTH, Math.round(PH * probeScale));
+      return edge === null ? null : edge / probeScale;
+    };
+    check('no red line: the left text starts at the ordinary padding', footer(PW, PH, 2).calls.find((c) => c.align === 'left')!.x < PW * 0.05);
+    for (const [label, from, to, extra] of [['a thin line', 65, 67, {}], ['a hairline anti-aliased toward white', 65, 66, { red: [240, 185, 185] as [number, number, number] }], ['a line with writing across it', 65, 67, { noisyRows: true }], ['a line far in from the left', 150, 153, {}]] as [string, number, number, { noisyRows?: boolean; red?: [number, number, number] }][]) {
+      const edge = lineAt(from, to, extra);
+      check(`${label}: it is found, at its right-hand edge (page units)`, edge !== null && Math.abs(edge - to) < 2, String(edge));
+      const results = zooms.map((z) => footer(PW, PH, scaleFor(PW, z, 2), edge));
+      check(`${label}: at every zoom the left text begins to the right of the line (never across or beneath it)`, results.every((r) => r.calls.find((c) => c.align === 'left')!.x > edge! && r.calls.length === 2));
+      check(`${label}: and it is at the same page position at every zoom`, new Set(results.map((r) => r.calls.find((c) => c.align === 'left')!.x)).size === 1);
+    }
+    check('a double line yields its outer edge', (() => { const probe = recordingContext({ redColumns: [[88, 91], [96, 99]] }); const edge = findMarginLine(probe.ctx, MARGIN_PROBE_WIDTH, 1131); return edge === 99; })());
+    check('a wide block of red is colour, not a margin line — ignored', findMarginLine(recordingContext({ redColumns: [[100, 400]] }).ctx, MARGIN_PROBE_WIDTH, 1131) === null);
+    check('an unreadable canvas is treated as having no line', (() => { const u = recordingContext(); (u.ctx as unknown as { getImageData: () => never }).getImageData = () => { throw new Error('tainted'); }; return findMarginLine(u.ctx, MARGIN_PROBE_WIDTH, 1131) === null; })());
+    check('a narrow page with a margin line keeps both pieces at every zoom', (() => { const edge = 33; return zooms.every((z) => { const r = footer(300, 900, scaleFor(300, z, 2), edge); return r.calls.length === 2 && r.calls.find((c) => c.align === 'left')!.x > edge; }); })());
+
+    // --- structure: no strip, no overlay, notes and papers alike ------------------
+    const { readFile } = await import('node:fs/promises');
+    const pdfPage = await readFile(path.join(process.cwd(), 'src/components/notes/pdf-page.tsx'), 'utf8');
+    check('no footer strip: the canvas is exactly the PDF page (height = the viewport\'s, no added height)', /canvas\.height = pixelHeight;/.test(pdfPage) && !/footerHeight|FOOTER_FRACTION|strip\b/.test(pdfPage.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '')));
+    check('the footer is drawn onto the page canvas under the page\'s own viewport scale — not an HTML overlay', /drawFooter\(ctx, base\.width, base\.height, viewport\.scale,/.test(pdfPage) && !/<footer|absolute.*cookienotes/i.test(pdfPage));
+    const noteViewer = await readFile(path.join(process.cwd(), 'src/components/notes/note-viewer.tsx'), 'utf8');
+    const notesPage = await readFile(path.join(process.cwd(), 'src/app/(reader)/notes/[id]/page.tsx'), 'utf8');
+    const pyqsPage = await readFile(path.join(process.cwd(), 'src/app/(reader)/pyqs/[id]/page.tsx'), 'utf8');
+    check('notes and papers use the same viewer and the same page renderer (one implementation)', /NoteViewer/.test(notesPage) && /NoteViewer/.test(pyqsPage) && /PdfPage/.test(noteViewer));
   }
 
   // =========================================================================
