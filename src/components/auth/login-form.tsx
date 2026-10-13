@@ -49,9 +49,13 @@ export function LoginForm({
   const [pending, setPending] = useState(false);
   const [conflict, setConflict] = useState<ConflictDetails | null>(null);
   const [forcing, setForcing] = useState(false);
+  // The fields are only marked invalid after a sign-in attempt was refused — not by a
+  // notice that arrives with the page, such as "Please sign in again."
+  const [refused, setRefused] = useState(false);
 
   async function submit(force: boolean) {
     setError(null);
+    setRefused(false);
     if (force) setForcing(true);
     else setPending(true);
 
@@ -70,6 +74,7 @@ export function LoginForm({
       }
 
       if (!response.ok) {
+        setRefused(true);
         setError(typeof data.error === 'string' ? data.error : 'Could not sign you in.');
         return;
       }
@@ -108,10 +113,10 @@ export function LoginForm({
             type="email"
             autoComplete="email"
             required
-            placeholder="you@college.edu"
+            placeholder="you@example.com"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
-            aria-invalid={Boolean(error)}
+            aria-invalid={refused}
           />
         </div>
 
@@ -133,7 +138,7 @@ export function LoginForm({
             placeholder="••••••••••"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            aria-invalid={Boolean(error)}
+            aria-invalid={refused}
           />
         </div>
 
