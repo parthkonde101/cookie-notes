@@ -111,10 +111,9 @@ const servers: OwnedServer[] = [];
 /**
  * A canvas that records what is drawn instead of drawing it — in the units the code
  * passed, together with the transform in force at that moment (so a test can tell page
- * units from device pixels). `redColumns` makes `getImageData` return a page with red
- * vertical lines at those x ranges, so margin-line detection runs without a browser.
+ * units from device pixels).
  */
-function recordingContext(opts: { redColumns?: [number, number][]; noisyRows?: boolean; red?: [number, number, number]; paper?: [number, number, number] } = {}) {
+function recordingContext() {
   type Call = { kind: 'text' | 'rect'; text?: string; x: number; y: number; align: string; fontPx: number; scale: number; fill: string };
   const calls: Call[] = [];
   const state = { font: '', fillStyle: '', textAlign: 'left', textBaseline: 'alphabetic', scale: 1, canvasTouched: false };
@@ -134,24 +133,6 @@ function recordingContext(opts: { redColumns?: [number, number][]; noisyRows?: b
     measureText(text: string) { return { width: text.length * fontPx() * 0.55 }; },
     fillText(text: string, x: number, y: number) { calls.push({ kind: 'text', text, x, y, align: state.textAlign, fontPx: fontPx(), scale: state.scale, fill: state.fillStyle }); },
     fillRect(x: number, y: number) { calls.push({ kind: 'rect', x, y, align: state.textAlign, fontPx: fontPx(), scale: state.scale, fill: state.fillStyle }); },
-    getImageData(sx: number, sy: number, sw: number, sh: number) {
-      const data = new Uint8ClampedArray(sw * sh * 4).fill(255);
-      const [pr, pg, pb] = opts.paper ?? [255, 255, 255];
-      for (let i = 0; i < data.length; i += 4) { data[i] = pr; data[i + 1] = pg; data[i + 2] = pb; }
-      const [r, g, b] = opts.red ?? [220, 40, 40];
-      for (let y = 0; y < sh; y += 1) {
-        for (let x = 0; x < sw; x += 1) {
-          const px = sx + x;
-          const red = (opts.redColumns ?? []).some(([from, to]) => px >= from && px < to);
-          // Writing crossing the line: every fifth row is dark instead of red.
-          const crossed = opts.noisyRows && (sy + y) % 5 === 0;
-          const i = (y * sw + x) * 4;
-          if (red && !crossed) { data[i] = r; data[i + 1] = g; data[i + 2] = b; }
-          else if (crossed && red) { data[i] = 20; data[i + 1] = 20; data[i + 2] = 20; }
-        }
-      }
-      return { data };
-    },
   };
   return { ctx: ctx as unknown as CanvasRenderingContext2D, calls, state };
 }
@@ -175,7 +156,7 @@ async function main() {
   await cleanup();
 
   const { accountReference, userIdsForReference, REFERENCE_PATTERN } = await import('../src/lib/access/account-reference');
-  const { drawFooter, findMarginLine, layoutFooter, pageIsDark, MARGIN_PROBE_WIDTH } = await import('../src/components/notes/watermark');
+  const { drawFooter, layoutFooter, NOTEBOOK_MARGIN_FRACTION, NOTEBOOK_IS_DARK } = await import('../src/components/notes/watermark');
   const { readWatermarkSetting } = await import('../src/lib/env');
 
   // --- fixtures ---------------------------------------------------------------
@@ -257,9 +238,15 @@ async function main() {
     const zooms = [0.5, 0.75, 1, 1.25, 1.5, 1.75];
     // What the viewer does: fit the page to ~1000 CSS px, times the zoom, times the device pixel ratio.
     const scaleFor = (pageWidth: number, zoom: number, dpr: number) => ((1000 * zoom) / pageWidth) * dpr;
-    const footer = (w: number, h: number, scale: number, marginRight: number | null = null, page = 12) => {
+    // `footer` draws with explicit options (no margin line, light page unless said otherwise); `formatted` uses the notes' format defaults.
+    const footer = (w: number, h: number, scale: number, marginRight: number | null = null, page = 12, dark = false) => {
       const rec = recordingContext();
-      drawFooter(rec.ctx, w, h, scale, REF, page, marginRight);
+      drawFooter(rec.ctx, w, h, scale, REF, page, marginRight, dark);
+      return rec;
+    };
+    const formatted = (w: number, h: number, scale: number, page = 12) => {
+      const rec = recordingContext();
+      drawFooter(rec.ctx, w, h, scale, REF, page);
       return rec;
     };
 
@@ -296,51 +283,33 @@ async function main() {
     check('layout is a pure function of the page — the same page always gives the same layout', JSON.stringify(lay) === JSON.stringify(layoutFooter(595, 842, 'CN-7K2M9QXA · Page 3', null, (text, size) => text.length * size * 0.55)));
     check('a page too narrow for both pieces drops the left one because of the PAGE, identically at every zoom', zooms.every((z) => footer(120, 160, scaleFor(120, z, 1)).calls.length === 1));
 
-    // --- dark pages ----------------------------------------------------------------
-    const darkRec = recordingContext();
-    drawFooter(darkRec.ctx, 595, 842, 2, REF, 1, null, true);
-    check('on a dark page the footer uses light grey at the same 50% opacity, so it can be seen', darkRec.calls.every((c) => c.fill === 'rgba(225, 225, 225, 0.5)') && a4.calls.every((c) => c.fill === 'rgba(55, 55, 55, 0.5)'), darkRec.calls[0].fill);
-    check('a dark page is recognised from its bottom edge; a white page and a missing canvas are not', pageIsDark(recordingContext({ paper: [48, 48, 48] }).ctx, 800, 1100) && !pageIsDark(recordingContext().ctx, 800, 1100) && !pageIsDark(recordingContext({ paper: [200, 200, 200] }).ctx, 800, 1100) && (() => { const u = recordingContext(); (u.ctx as unknown as { getImageData: () => never }).getImageData = () => { throw new Error('tainted'); }; return !pageIsDark(u.ctx, 800, 1100); })());
-    check('the dark-page ink does not change geometry — same positions as on a light page', JSON.stringify(darkRec.calls.map((c) => [c.text, c.x, c.y, c.fontPx])) === JSON.stringify(footer(595, 842, 2, null, 1).calls.map((c) => [c.text, c.x, c.y, c.fontPx])));
-
-    // --- the red margin line ---------------------------------------------------
-    // The page is probed at one fixed width (MARGIN_PROBE_WIDTH), whatever the zoom; the answer is converted to page units.
-    const PW = 595;
-    const PH = 842;
-    const probeScale = MARGIN_PROBE_WIDTH / PW;
-    const lineAt = (fromPt: number, toPt: number, extra: { noisyRows?: boolean; red?: [number, number, number] } = {}) => {
-      const pxFrom = Math.round(fromPt * probeScale);
-      const pxTo = Math.max(pxFrom + 1, Math.round(toPt * probeScale));
-      const probe = recordingContext({ redColumns: [[pxFrom, pxTo]], ...extra });
-      const edge = findMarginLine(probe.ctx, MARGIN_PROBE_WIDTH, Math.round(PH * probeScale));
-      return edge === null ? null : edge / probeScale;
-    };
-    check('no red line: the left text starts at the ordinary padding', footer(PW, PH, 2).calls.find((c) => c.align === 'left')!.x < PW * 0.05);
-    for (const [label, from, to, extra] of [['a thin line', 65, 67, {}], ['a hairline anti-aliased toward white', 65, 66, { red: [240, 185, 185] as [number, number, number] }], ['a line with writing across it', 65, 67, { noisyRows: true }], ['a line far in from the left', 150, 153, {}]] as [string, number, number, { noisyRows?: boolean; red?: [number, number, number] }][]) {
-      const edge = lineAt(from, to, extra);
-      check(`${label}: it is found, at its right-hand edge (page units)`, edge !== null && Math.abs(edge - to) < 2, String(edge));
-      const results = zooms.map((z) => footer(PW, PH, scaleFor(PW, z, 2), edge));
-      check(`${label}: at every zoom the left text begins to the right of the line (never across or beneath it)`, results.every((r) => r.calls.find((c) => c.align === 'left')!.x > edge! && r.calls.length === 2));
-      check(`${label}: and it is at the same page position at every zoom`, new Set(results.map((r) => r.calls.find((c) => c.align === 'left')!.x)).size === 1);
+    // --- the notes' format: margin line and ink are constants, not worked out per page ---------
+    check('the format is: margin line edge at 14.25% of the page width, dark pages', NOTEBOOK_MARGIN_FRACTION === 0.1425 && NOTEBOOK_IS_DARK === true);
+    const fmtPages = [['A4 portrait', 595, 842], ['A4 landscape', 842, 595], ['US Letter', 612, 792], ['a tall narrow page', 300, 900]] as const;
+    for (const [label, w, h] of fmtPages) {
+      const runs = zooms.map((z) => formatted(w, h, scaleFor(w, z, 2)));
+      const left = (r: ReturnType<typeof formatted>) => r.calls.find((c) => c.align === 'left');
+      check(`${label}: by default the left text begins to the right of the margin line (${(NOTEBOOK_MARGIN_FRACTION * 100).toFixed(2)}% of the width) at every zoom`, runs.every((r) => !!left(r) && left(r)!.x > w * NOTEBOOK_MARGIN_FRACTION && r.calls.length === 2), String(left(runs[0])?.x));
+      check(`${label}: and at the same page position at every zoom`, new Set(runs.map((r) => left(r)!.x)).size === 1);
+      check(`${label}: by default it uses the light ink (same 50% opacity) for the format's dark pages`, runs.every((r) => r.calls.every((c) => c.fill === 'rgba(225, 225, 225, 0.5)')));
     }
-    check('a double line yields its outer edge', (() => { const probe = recordingContext({ redColumns: [[88, 91], [96, 99]] }); const edge = findMarginLine(probe.ctx, MARGIN_PROBE_WIDTH, 1131); return edge === 99; })());
-    check('a dim red line on a dark page (e.g. #63262C on #303030, as in dark-mode notebooks) is found', (() => { const probe = recordingContext({ redColumns: [[110, 112]], red: [99, 38, 44], paper: [48, 48, 48] }); return findMarginLine(probe.ctx, MARGIN_PROBE_WIDTH, 1131) === 112; })());
-    check('a dark page with no line, and ruled neutral/blue lines, has none', findMarginLine(recordingContext({ paper: [48, 48, 48] }).ctx, MARGIN_PROBE_WIDTH, 1131) === null && findMarginLine(recordingContext({ redColumns: [[100, 102]], red: [150, 190, 235] }).ctx, MARGIN_PROBE_WIDTH, 1131) === null && findMarginLine(recordingContext({ redColumns: [[100, 102]], red: [60, 60, 60], paper: [48, 48, 48] }).ctx, MARGIN_PROBE_WIDTH, 1131) === null);
-    check('a wide block of red is colour, not a margin line — ignored', findMarginLine(recordingContext({ redColumns: [[100, 400]] }).ctx, MARGIN_PROBE_WIDTH, 1131) === null);
-    check('an unreadable canvas is treated as having no line', (() => { const u = recordingContext(); (u.ctx as unknown as { getImageData: () => never }).getImageData = () => { throw new Error('tainted'); }; return findMarginLine(u.ctx, MARGIN_PROBE_WIDTH, 1131) === null; })());
-    check('a narrow page with a margin line keeps both pieces at every zoom', (() => { const edge = 33; return zooms.every((z) => { const r = footer(300, 900, scaleFor(300, z, 2), edge); return r.calls.length === 2 && r.calls.find((c) => c.align === 'left')!.x > edge; }); })());
+    check('overrides still work: no margin line starts the text at the plain padding, and a light page gets the dark-grey ink', footer(595, 842, 2).calls.find((c) => c.align === 'left')!.x < 595 * 0.05 && footer(595, 842, 2).calls.every((c) => c.fill === 'rgba(55, 55, 55, 0.5)'));
+    check('the ink does not change geometry — same positions either way', JSON.stringify(formatted(595, 842, 2, 1).calls.map((c) => [c.text, c.fontPx, c.y])) === JSON.stringify(footer(595, 842, 2, null, 1, true).calls.map((c) => [c.text, c.fontPx, c.y])));
+    check('a narrow page keeps both pieces at every zoom with the margin line', zooms.every((z) => { const r = formatted(300, 900, scaleFor(300, z, 2)); return r.calls.length === 2 && r.calls.find((c) => c.align === 'left')!.x > 300 * NOTEBOOK_MARGIN_FRACTION; }));
 
     // --- structure: no strip, no overlay, notes and papers alike ------------------
     const { readFile } = await import('node:fs/promises');
     const pdfPage = await readFile(path.join(process.cwd(), 'src/components/notes/pdf-page.tsx'), 'utf8');
     check('no footer strip: the canvas is exactly the PDF page (height = the viewport\'s, no added height)', /canvas\.height = pixelHeight;/.test(pdfPage) && !/footerHeight|FOOTER_FRACTION|strip\b/.test(pdfPage.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '')));
-    check('the page is rendered once only — no extra off-screen render to look for the margin line', (pdfPage.match(/page\.render\(/g) ?? []).length === 1 && !/createElement\('canvas'\)[\s\S]{0,400}page\.render/.test(pdfPage));
-    check('the margin line and brightness are read off the painted page, after it finishes and before the footer is drawn (so no delay and no visible fix-up)', /await task\.promise;[\s\S]*lookAtPage\([\s\S]*drawFooter\(/.test(pdfPage) && !/await probe/.test(pdfPage));
+    check('the page is rendered once only — no extra off-screen render', (pdfPage.match(/page\.render\(/g) ?? []).length === 1);
+    check('no per-page work at all: nothing is read back from the canvas, scanned or rendered twice — the margin line and ink are constants of the format', !/getImageData|findMarginLine|pageIsDark|lookAtPage|createElement\('canvas'\)/.test(pdfPage) && /await task\.promise;[\s\S]*drawFooter\(/.test(pdfPage));
     check('the footer is drawn onto the page canvas under the page\'s own viewport scale — not an HTML overlay', /drawFooter\(ctx, base\.width, base\.height, viewport\.scale,/.test(pdfPage) && !/<footer|absolute.*cookienotes/i.test(pdfPage));
     const noteViewer = await readFile(path.join(process.cwd(), 'src/components/notes/note-viewer.tsx'), 'utf8');
     const notesPage = await readFile(path.join(process.cwd(), 'src/app/(reader)/notes/[id]/page.tsx'), 'utf8');
     const pyqsPage = await readFile(path.join(process.cwd(), 'src/app/(reader)/pyqs/[id]/page.tsx'), 'utf8');
     check('notes and papers use the same viewer and the same page renderer (one implementation)', /NoteViewer/.test(notesPage) && /NoteViewer/.test(pyqsPage) && /PdfPage/.test(noteViewer));
+    check('pdf.js and its worker start loading BEFORE the token request and the download, in parallel with them, and the worker is handed to the document', (() => { const engine = noteViewer.indexOf("import('pdfjs-dist')"); const token = noteViewer.indexOf('fetch(`${apiBase}/${noteId}/view-token`'); const content = noteViewer.indexOf('fetch(open.contentUrl'); return engine > 0 && engine < token && token < content && /new pdfjs\.PDFWorker\(\)/.test(noteViewer) && /getDocument\(\{[\s\S]*?\bworker,/.test(noteViewer); })());
+    check('access is unchanged by that: the token is still requested first and the bytes fetched only from the URL it returns', /view-token`,\s*\{\s*method: 'POST',\s*cache: 'no-store'/.test(noteViewer) && /fetch\(open\.contentUrl, \{ cache: 'no-store' \}\)/.test(noteViewer));
   }
 
   // =========================================================================

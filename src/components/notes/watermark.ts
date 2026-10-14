@@ -31,14 +31,15 @@
  * printed footer and stays out of the way of the notes; where it overlaps a
  * document's own marks it is faint enough to leave them readable.
  *
- * ## Respecting a margin line
+ * ## Respecting the margin line — by format, not by inspecting each page
  *
- * Many notes are drawn on ruled paper with a red margin line down the left. The
- * left text must start to the right of that line, so the painted page is looked at
- * for one (see `findMarginLine`) — read off the page already on screen, scaled to a
- * fixed width and remembered per page, so there is no extra render and the answer
- * does not depend on the zoom — and the text is placed just beyond it, in page
- * units. If there is no line the text starts at the ordinary left padding.
+ * Cookie Notes' notes all share one format: dark ruled pages with a red margin line
+ * down the left, always at the same place. The left text must start to the right of
+ * that line, so its position is a constant of the format (`NOTEBOOK_MARGIN_FRACTION`),
+ * not something worked out per page: nothing is rendered twice, nothing is read back
+ * from the canvas, and the footer costs two text calls. The same goes for the ink,
+ * chosen for the format's dark pages (`NOTEBOOK_IS_DARK`). If the format ever
+ * changes, change those two constants; `drawFooter` also accepts them as overrides.
  *
  * Switched off with NOTE_WATERMARK_ENABLED=false, in which case nothing is drawn.
  */
@@ -66,101 +67,16 @@ const MARGIN_GAP_FRACTION = 0.012;
 const TEXT_GAP_FRACTION = 0.024;
 /** The text is grey at 50% opacity: a quiet printed footer, not a stamp. */
 const INK = 'rgba(55, 55, 55, 0.5)';
-/** The same quiet footer on a dark page (a dark-mode notebook), where dark grey would vanish: light grey, same opacity. */
+/** The same quiet footer on a dark page, where dark grey would vanish: light grey, same opacity. */
 const INK_ON_DARK = 'rgba(225, 225, 225, 0.5)';
-/** A page whose bottom edge averages darker than this (0–255) is a dark page. */
-const DARK_PAGE_LUMINANCE = 110;
-
-/** The width, in canvas pixels, the painted page is scaled to when it is looked at. The same for every zoom. */
-export const MARGIN_PROBE_WIDTH = 800;
-/** How far into the page, from the left, a margin line is looked for. */
-const MARGIN_SEARCH_FRACTION = 0.35;
-/** A column is a line when this share of the scanned rows is red in it. */
-const LINE_COVERAGE = 0.6;
-/** A "line" wider than this share of the page is a block of colour, not a margin line. */
-const MAX_LINE_FRACTION = 0.0175;
-/** Cap on the pixels read back while looking, so a very large canvas stays cheap. */
-const MAX_SCAN_PIXELS = 1_500_000;
 
 /**
- * Red-dominant, whatever the brightness: a margin line is bright red on white paper,
- * but on a dark page (a dark-mode notebook) it is a dim red such as #63262C, and a
- * hairline anti-aliased toward its background is a washed-out one. What they share is
- * that red clearly leads the other channels — by a margin and by a ratio — which plain
- * paper, ruled lines, pencil and ink (all neutral or blue-ish) never do.
+ * The notes' format: where the right-hand edge of the red margin line is, as a fraction of
+ * the page's width. Measured across the notes (it is 14.1–14.2% on every one).
  */
-function isRed(r: number, g: number, b: number): boolean {
-  const other = Math.max(g, b);
-  return r >= 60 && r - other >= 22 && r >= other * 1.25;
-}
-
-/**
- * Where a red vertical margin line runs down the left of a rendered page, as the x
- * coordinate (in that canvas's pixels) of its RIGHT-hand edge — or null if there is none.
- *
- * It reads the rendered page rather than guessing from the PDF: it takes a band of
- * rows through the middle of the page and looks, in the left part of it, for a column
- * that is red from top to bottom of the band. Text crossing the line does not hide it
- * (coverage only has to be 60%), a double line yields its outer edge, and a wide block
- * of red is ignored as colour, not a margin. If the canvas cannot be read, there is no
- * line as far as we can tell.
- */
-export function findMarginLine(ctx: CanvasRenderingContext2D, width: number, height: number): number | null {
-  const regionWidth = Math.floor(width * MARGIN_SEARCH_FRACTION);
-  if (regionWidth < 4 || height < 8 || typeof ctx.getImageData !== 'function') return null;
-
-  const bandHeight = Math.min(Math.floor(height * 0.76), Math.max(40, Math.floor(MAX_SCAN_PIXELS / regionWidth)));
-  const top = Math.floor((height - bandHeight) / 2);
-
-  let data: Uint8ClampedArray;
-  try {
-    data = ctx.getImageData(0, top, regionWidth, bandHeight).data;
-  } catch {
-    return null;
-  }
-
-  const needed = Math.ceil(bandHeight * LINE_COVERAGE);
-  const maxColumns = Math.max(4, Math.round(width * MAX_LINE_FRACTION));
-  let rightmost = -1;
-  let columns = 0;
-  for (let x = 0; x < regionWidth; x += 1) {
-    let hits = 0;
-    for (let y = 0; y < bandHeight; y += 1) {
-      const i = (y * regionWidth + x) * 4;
-      if (isRed(data[i], data[i + 1], data[i + 2])) hits += 1;
-    }
-    if (hits >= needed) {
-      rightmost = x;
-      columns += 1;
-    }
-  }
-  if (rightmost < 0 || columns > maxColumns) return null;
-  return rightmost + 1;
-}
-
-/**
- * Whether the page is dark along its bottom edge, where the footer goes — so the
- * footer can use ink that shows against it. Reads the bottom tenth of the rendered
- * page; if the canvas cannot be read the page is assumed light.
- */
-export function pageIsDark(ctx: CanvasRenderingContext2D, width: number, height: number): boolean {
-  if (width < 4 || height < 10 || typeof ctx.getImageData !== 'function') return false;
-  const band = Math.max(2, Math.floor(height * 0.1));
-  let data: Uint8ClampedArray;
-  try {
-    data = ctx.getImageData(0, height - band, width, band).data;
-  } catch {
-    return false;
-  }
-  let sum = 0;
-  let count = 0;
-  // Every 3rd pixel is plenty for an average.
-  for (let i = 0; i < data.length; i += 12) {
-    sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    count += 1;
-  }
-  return count > 0 && sum / count < DARK_PAGE_LUMINANCE;
-}
+export const NOTEBOOK_MARGIN_FRACTION = 0.1425;
+/** The notes' pages are dark, so the footer uses the light ink. */
+export const NOTEBOOK_IS_DARK = true;
 
 /** The footer's geometry, entirely in page units measured from the page's top-left corner. */
 export interface FooterLayout {
@@ -211,8 +127,9 @@ export function layoutFooter(
  * @param pageWidth  the page's width in PDF units (`getViewport({ scale: 1 }).width`)
  * @param pageHeight the page's height in PDF units
  * @param scale      canvas pixels per PDF unit — the viewport scale the page itself was rendered with
- * @param marginRight x (PDF units) of the right edge of a red margin line on this page, or null
- * @param dark       the page is dark along its bottom edge, so the footer uses light ink
+ * @param marginRight x (PDF units) of the right edge of a red margin line, or null for none;
+ *                    by default the notes' format (`NOTEBOOK_MARGIN_FRACTION` of the page width)
+ * @param dark       use light ink for a dark page; by default the notes' format (`NOTEBOOK_IS_DARK`)
  */
 export function drawFooter(
   ctx: CanvasRenderingContext2D,
@@ -221,8 +138,8 @@ export function drawFooter(
   scale: number,
   identity: WatermarkIdentity,
   pageNumber: number,
-  marginRight: number | null = null,
-  dark = false,
+  marginRight: number | null = pageWidth * NOTEBOOK_MARGIN_FRACTION,
+  dark: boolean = NOTEBOOK_IS_DARK,
 ): void {
   const reference = identity.reference.trim();
   if (!reference || !(pageWidth > 0) || !(pageHeight > 0) || !(scale > 0)) return;

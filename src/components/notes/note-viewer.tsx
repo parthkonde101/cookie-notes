@@ -162,6 +162,17 @@ export function NoteViewer({
     const tasks = tasksRef.current;
 
     async function load() {
+      // Start pdf.js and its worker now, in parallel with authorising and downloading the
+      // file below, rather than after it: the library and the worker script are a good part
+      // of the wait on a slow connection, and they do not depend on the bytes.
+      const engine = import('pdfjs-dist').then((pdfjs) => {
+        pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.mjs';
+        return { pdfjs, worker: new pdfjs.PDFWorker() };
+      });
+      // A failure is reported where it is awaited below; this only stops it counting as unhandled.
+      engine.catch(() => undefined);
+      let engineUsed = false;
+
       try {
         // 1. Ask the server to authorise this reading session.
         const openResponse = await fetch(`${apiBase}/${noteId}/view-token`, {
@@ -188,14 +199,16 @@ export function NoteViewer({
         const buffer = await contentResponse.arrayBuffer();
         if (cancelled) return;
 
-        // 3. Render with pdf.js (client-side only).
-        const pdfjs = await import('pdfjs-dist');
-        pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.mjs';
+        // 3. Render with pdf.js (client-side only), on the worker already started. From here
+        //    pdf.js owns the worker and destroys it with the document.
+        const { pdfjs, worker } = await engine;
+        engineUsed = true;
 
         const document_ = await pdfjs.getDocument({
           data: new Uint8Array(buffer),
           isEvalSupported: false,
           disableAutoFetch: true,
+          worker,
         }).promise;
 
         if (cancelled) {
@@ -212,6 +225,9 @@ export function NoteViewer({
         if (cancelled) return;
         setErrorMessage(error instanceof Error ? error.message : 'Something went wrong.');
         setStatus('error');
+      } finally {
+        // A worker that was started but never handed to a document (cancelled or failed early).
+        if (!engineUsed) void engine.then(({ worker }) => worker.destroy(), () => undefined);
       }
     }
 

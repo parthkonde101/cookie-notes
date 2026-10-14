@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RotateCw, TriangleAlert } from 'lucide-react';
-import { drawFooter, findMarginLine, MARGIN_PROBE_WIDTH, pageIsDark, type WatermarkIdentity } from '@/components/notes/watermark';
+import { drawFooter, type WatermarkIdentity } from '@/components/notes/watermark';
 
 /**
  * One page of the protected reader.
@@ -176,15 +176,9 @@ export function PdfPage({
         // the device pixel ratio and any step-back for Safari's limit), so it scales with
         // the page exactly as the page's own content does. It takes no space and adds no
         // height: the canvas is exactly the PDF page.
-        //
-        // What the footer needs to know about the page (its red margin line, whether it is
-        // dark) is read off the page just painted, in the same step as drawing the footer —
-        // so there is no second render, no delay before the page appears, and no visible
-        // fix-up afterwards.
-        if (identity) {
-          const look = lookAtPage(doc, pageNumber, canvas, base.width);
-          drawFooter(ctx, base.width, base.height, viewport.scale, identity, pageNumber, look?.marginRight ?? null, look?.dark ?? false);
-        }
+        // Where it sits relative to the margin line, and its ink, are constants of the notes'
+        // format (see watermark.ts) — nothing is worked out per page.
+        if (identity) drawFooter(ctx, base.width, base.height, viewport.scale, identity, pageNumber);
 
         taskRef.current = null;
         setStatus('done');
@@ -263,73 +257,6 @@ export function PdfPage({
       )}
     </div>
   );
-}
-
-/** What the footer needs to know about a page, found by looking at it once. */
-interface PageLook {
-  /** x (page units) of the right edge of a red margin line down the left, or null if there is none. */
-  marginRight: number | null;
-  /** The page is dark along its bottom edge. */
-  dark: boolean;
-}
-
-/**
- * Pages already looked at, by document and page. How a page looks is a property of the
- * page, not of how big it is being shown, so it is looked at once — the first time it is
- * painted — and every later zoom reuses the answer.
- */
-const lookCache = new WeakMap<object, Map<number, PageLook>>();
-
-/** A first paint narrower than this is too coarse to find a hairline margin line reliably. */
-const MIN_LOOK_WIDTH = 360;
-
-/**
- * Reads the margin line and the brightness off a page that has just been painted.
- *
- * The painted canvas is scaled down (or up) to a fixed width on a small scratch canvas and
- * read from there, so the answer does not depend on how large the page happens to be
- * drawn, no second render is needed, and reading a very large canvas back is avoided.
- * Called before the footer is drawn, so the footer is never mistaken for part of the page.
- * Returns null if the page cannot be read, or was painted too small to judge — the footer is
- * then drawn at its plain padding in the default ink, and the page is looked at again next time.
- */
-function lookAtPage(
-  doc: import('pdfjs-dist').PDFDocumentProxy,
-  pageNumber: number,
-  painted: HTMLCanvasElement,
-  pageWidth: number,
-): PageLook | null {
-  let pages = lookCache.get(doc);
-  if (!pages) {
-    pages = new Map();
-    lookCache.set(doc, pages);
-  }
-  const known = pages.get(pageNumber);
-  if (known) return known;
-  if (painted.width < MIN_LOOK_WIDTH) return null;
-
-  try {
-    const width = MARGIN_PROBE_WIDTH;
-    const height = Math.max(1, Math.round((width * painted.height) / painted.width));
-    const scratch = document.createElement('canvas');
-    scratch.width = width;
-    scratch.height = height;
-    const ctx = scratch.getContext('2d', { alpha: false, willReadFrequently: true });
-    if (!ctx) return null;
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(painted, 0, 0, width, height);
-
-    const edge = findMarginLine(ctx, width, height);
-    const look: PageLook = {
-      marginRight: edge === null ? null : edge / (width / pageWidth),
-      dark: pageIsDark(ctx, width, height),
-    };
-    pages.set(pageNumber, look);
-    return look;
-  } catch {
-    return null;
-  }
 }
 
 /**
