@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RotateCw, TriangleAlert } from 'lucide-react';
-import { drawFooter, findMarginLine, MARGIN_PROBE_WIDTH, type WatermarkIdentity } from '@/components/notes/watermark';
+import { drawFooter, findMarginLine, MARGIN_PROBE_WIDTH, pageIsDark, type WatermarkIdentity } from '@/components/notes/watermark';
 
 /**
  * One page of the protected reader.
@@ -143,9 +143,10 @@ export function PdfPage({
           scale *= Math.sqrt(MAX_CANVAS_PIXELS / area);
         }
 
-        // Where this page's red margin line is, if it has one, in page units — found once
-        // per page at a fixed resolution, so it is the same at every zoom.
-        const marginRight = identity ? await probeMarginLine(doc, page, base.width, registerTask) : null;
+        // What the page looks like where the footer goes — its red margin line (in page
+        // units) and whether it is a dark page — found once per page at a fixed
+        // resolution, so the answer is the same at every zoom.
+        const look = identity ? await probePage(doc, page, base.width, registerTask) : null;
         if (cancelled) return;
 
         const viewport = page.getViewport({ scale });
@@ -181,7 +182,7 @@ export function PdfPage({
         // the device pixel ratio and any step-back for Safari's limit), so it scales with
         // the page exactly as the page's own content does. It takes no space and adds no
         // height: the canvas is exactly the PDF page.
-        if (identity) drawFooter(ctx, base.width, base.height, viewport.scale, identity, pageNumber, marginRight);
+        if (identity) drawFooter(ctx, base.width, base.height, viewport.scale, identity, pageNumber, look?.marginRight ?? null, look?.dark ?? false);
 
         taskRef.current = null;
         setStatus('done');
@@ -262,32 +263,40 @@ export function PdfPage({
   );
 }
 
-/**
- * Margin lines already looked for, by document and page. A page's margin line is a
- * property of the page, not of how big it is being shown, so it is looked for once.
- */
-const marginCache = new WeakMap<object, Map<number, number | null>>();
+/** What the footer needs to know about a page, found by looking at it once. */
+interface PageLook {
+  /** x (page units) of the right edge of a red margin line down the left, or null if there is none. */
+  marginRight: number | null;
+  /** The page is dark along its bottom edge. */
+  dark: boolean;
+}
 
 /**
- * The x coordinate (in page units) of the right edge of a red margin line down the
- * left of the page, or null if it has none.
- *
- * The page is rendered once, off screen, at a fixed width and read back; the
- * answer is converted to page units and remembered, so changing the zoom neither
- * repeats the work nor changes the result.
+ * Pages already looked at, by document and page. How a page looks is a property of the
+ * page, not of how big it is being shown, so it is looked at once.
  */
-async function probeMarginLine(
+const lookCache = new WeakMap<object, Map<number, PageLook>>();
+
+/**
+ * Renders the page once, off screen, at a fixed width and reads it back for its margin
+ * line and its brightness, converted to page units and remembered, so changing the zoom
+ * neither repeats the work nor changes the result. A probe that fails or is cancelled is
+ * not cached and yields null: the page is still drawn, with the footer at its plain
+ * padding in the default ink.
+ */
+async function probePage(
   doc: import('pdfjs-dist').PDFDocumentProxy,
   page: import('pdfjs-dist').PDFPageProxy,
   pageWidth: number,
   registerTask: PdfPageProps['registerTask'],
-): Promise<number | null> {
-  let pages = marginCache.get(doc);
+): Promise<PageLook | null> {
+  let pages = lookCache.get(doc);
   if (!pages) {
     pages = new Map();
-    marginCache.set(doc, pages);
+    lookCache.set(doc, pages);
   }
-  if (pages.has(page.pageNumber)) return pages.get(page.pageNumber) ?? null;
+  const known = pages.get(page.pageNumber);
+  if (known) return known;
 
   const scale = MARGIN_PROBE_WIDTH / pageWidth;
   const viewport = page.getViewport({ scale });
@@ -304,17 +313,15 @@ async function probeMarginLine(
   try {
     await task.promise;
   } catch {
-    // A cancelled or failed probe is not an answer: leave it uncached so the next render
-    // asks again, and let the page itself be drawn (its footer then sits at the plain padding).
     return null;
   } finally {
     unregister();
   }
 
   const edge = findMarginLine(ctx, probe.width, probe.height);
-  const result = edge === null ? null : edge / scale;
-  pages.set(page.pageNumber, result);
-  return result;
+  const look: PageLook = { marginRight: edge === null ? null : edge / scale, dark: pageIsDark(ctx, probe.width, probe.height) };
+  pages.set(page.pageNumber, look);
+  return look;
 }
 
 /**

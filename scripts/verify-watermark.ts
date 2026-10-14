@@ -114,7 +114,7 @@ const servers: OwnedServer[] = [];
  * units from device pixels). `redColumns` makes `getImageData` return a page with red
  * vertical lines at those x ranges, so margin-line detection runs without a browser.
  */
-function recordingContext(opts: { redColumns?: [number, number][]; noisyRows?: boolean; red?: [number, number, number] } = {}) {
+function recordingContext(opts: { redColumns?: [number, number][]; noisyRows?: boolean; red?: [number, number, number]; paper?: [number, number, number] } = {}) {
   type Call = { kind: 'text' | 'rect'; text?: string; x: number; y: number; align: string; fontPx: number; scale: number; fill: string };
   const calls: Call[] = [];
   const state = { font: '', fillStyle: '', textAlign: 'left', textBaseline: 'alphabetic', scale: 1, canvasTouched: false };
@@ -136,6 +136,8 @@ function recordingContext(opts: { redColumns?: [number, number][]; noisyRows?: b
     fillRect(x: number, y: number) { calls.push({ kind: 'rect', x, y, align: state.textAlign, fontPx: fontPx(), scale: state.scale, fill: state.fillStyle }); },
     getImageData(sx: number, sy: number, sw: number, sh: number) {
       const data = new Uint8ClampedArray(sw * sh * 4).fill(255);
+      const [pr, pg, pb] = opts.paper ?? [255, 255, 255];
+      for (let i = 0; i < data.length; i += 4) { data[i] = pr; data[i + 1] = pg; data[i + 2] = pb; }
       const [r, g, b] = opts.red ?? [220, 40, 40];
       for (let y = 0; y < sh; y += 1) {
         for (let x = 0; x < sw; x += 1) {
@@ -173,7 +175,7 @@ async function main() {
   await cleanup();
 
   const { accountReference, userIdsForReference, REFERENCE_PATTERN } = await import('../src/lib/access/account-reference');
-  const { drawFooter, findMarginLine, layoutFooter, MARGIN_PROBE_WIDTH } = await import('../src/components/notes/watermark');
+  const { drawFooter, findMarginLine, layoutFooter, pageIsDark, MARGIN_PROBE_WIDTH } = await import('../src/components/notes/watermark');
   const { readWatermarkSetting } = await import('../src/lib/env');
 
   // --- fixtures ---------------------------------------------------------------
@@ -278,7 +280,7 @@ async function main() {
 
       const [first, second] = ['left', 'right'].map((side) => texts(base).find((t) => t.align === side)!);
       check(`${label}: the site on the left, the reference and page number on the right`, first?.text === 'cookienotes.app' && second?.text === 'CN-7K2M9QXA · Page 12');
-      check(`${label}: it is inside the page, on its bottom edge, equally far from the bottom and right edges`, texts(base).every((t) => t.x > 0 && t.x < w && t.y > h * 0.9 && t.y < h) && Math.abs((h - second.y) - (w - second.x)) < 1e-9, JSON.stringify(texts(base).map((t) => [t.x, t.y])));
+      check(`${label}: it is inside the page, on its bottom edge, with the bottom padding at 1.5% of the width and the right padding at 3%`, texts(base).every((t) => t.x > 0 && t.x < w && t.y > h * 0.9 && t.y < h) && Math.abs((h - second.y) - Math.max(6, w * 0.015)) < 1e-9 && Math.abs((w - second.x) - Math.max(10, w * 0.03)) < 1e-9, JSON.stringify(texts(base).map((t) => [t.x, t.y])));
       check(`${label}: the two pieces never overlap`, first.x + 'cookienotes.app'.length * first.fontPx * 0.55 <= second.x - second.text!.length * second.fontPx * 0.55);
       check(`${label}: no background, no rectangle, nothing drawn below the page`, base.rec.calls.every((c) => c.kind === 'text' && c.y <= h) && !base.rec.state.canvasTouched);
       check(`${label}: the transform is put back afterwards (page content is unaffected)`, base.rec.state.scale === 1);
@@ -286,13 +288,20 @@ async function main() {
 
     const a4 = footer(595, 842, 3.36);
     check('semi-transparent grey ink — subtle, no opaque stamp', /^rgba\(\d+, \d+, \d+, 0\.5\)$/.test(a4.calls[0].fill), a4.calls[0].fill);
-    check('its size is a fixed fraction of the page width (about 8 pt on A4) and the same for every page of that size', Math.abs(a4.calls[0].fontPx - 595 * 0.0135) < 1e-9 && footer(595, 842, 0.5).calls[0].fontPx === a4.calls[0].fontPx);
-    check('and held between a floor and a ceiling in page units', footer(100, 100, 1).calls[0].fontPx === 6 && footer(5000, 3000, 1).calls[0].fontPx === 12);
+    check('its size is a fixed fraction of the page width (about 11 pt on A4) and the same for every page of that size', Math.abs(a4.calls[0].fontPx - 595 * 0.019) < 1e-9 && footer(595, 842, 0.5).calls[0].fontPx === a4.calls[0].fontPx);
+    check('and held between a floor and a ceiling in page units', footer(100, 100, 1).calls[0].fontPx === 8 && footer(5000, 3000, 1).calls[0].fontPx === 16);
     check('no reference means nothing is drawn', (() => { const r = recordingContext(); drawFooter(r.ctx, 595, 842, 1, { reference: '   ' }, 1); return r.calls.length === 0; })());
     check('and never an email address', !a4.calls.some((c) => (c.text ?? '').includes('@')));
     const lay = layoutFooter(595, 842, 'CN-7K2M9QXA · Page 3', null, (text, size) => text.length * size * 0.55);
     check('layout is a pure function of the page — the same page always gives the same layout', JSON.stringify(lay) === JSON.stringify(layoutFooter(595, 842, 'CN-7K2M9QXA · Page 3', null, (text, size) => text.length * size * 0.55)));
     check('a page too narrow for both pieces drops the left one because of the PAGE, identically at every zoom', zooms.every((z) => footer(120, 160, scaleFor(120, z, 1)).calls.length === 1));
+
+    // --- dark pages ----------------------------------------------------------------
+    const darkRec = recordingContext();
+    drawFooter(darkRec.ctx, 595, 842, 2, REF, 1, null, true);
+    check('on a dark page the footer uses light grey at the same 50% opacity, so it can be seen', darkRec.calls.every((c) => c.fill === 'rgba(225, 225, 225, 0.5)') && a4.calls.every((c) => c.fill === 'rgba(55, 55, 55, 0.5)'), darkRec.calls[0].fill);
+    check('a dark page is recognised from its bottom edge; a white page and a missing canvas are not', pageIsDark(recordingContext({ paper: [48, 48, 48] }).ctx, 800, 1100) && !pageIsDark(recordingContext().ctx, 800, 1100) && !pageIsDark(recordingContext({ paper: [200, 200, 200] }).ctx, 800, 1100) && (() => { const u = recordingContext(); (u.ctx as unknown as { getImageData: () => never }).getImageData = () => { throw new Error('tainted'); }; return !pageIsDark(u.ctx, 800, 1100); })());
+    check('the dark-page ink does not change geometry — same positions as on a light page', JSON.stringify(darkRec.calls.map((c) => [c.text, c.x, c.y, c.fontPx])) === JSON.stringify(footer(595, 842, 2, null, 1).calls.map((c) => [c.text, c.x, c.y, c.fontPx])));
 
     // --- the red margin line ---------------------------------------------------
     // The page is probed at one fixed width (MARGIN_PROBE_WIDTH), whatever the zoom; the answer is converted to page units.
@@ -315,6 +324,8 @@ async function main() {
       check(`${label}: and it is at the same page position at every zoom`, new Set(results.map((r) => r.calls.find((c) => c.align === 'left')!.x)).size === 1);
     }
     check('a double line yields its outer edge', (() => { const probe = recordingContext({ redColumns: [[88, 91], [96, 99]] }); const edge = findMarginLine(probe.ctx, MARGIN_PROBE_WIDTH, 1131); return edge === 99; })());
+    check('a dim red line on a dark page (e.g. #63262C on #303030, as in dark-mode notebooks) is found', (() => { const probe = recordingContext({ redColumns: [[110, 112]], red: [99, 38, 44], paper: [48, 48, 48] }); return findMarginLine(probe.ctx, MARGIN_PROBE_WIDTH, 1131) === 112; })());
+    check('a dark page with no line, and ruled neutral/blue lines, has none', findMarginLine(recordingContext({ paper: [48, 48, 48] }).ctx, MARGIN_PROBE_WIDTH, 1131) === null && findMarginLine(recordingContext({ redColumns: [[100, 102]], red: [150, 190, 235] }).ctx, MARGIN_PROBE_WIDTH, 1131) === null && findMarginLine(recordingContext({ redColumns: [[100, 102]], red: [60, 60, 60], paper: [48, 48, 48] }).ctx, MARGIN_PROBE_WIDTH, 1131) === null);
     check('a wide block of red is colour, not a margin line — ignored', findMarginLine(recordingContext({ redColumns: [[100, 400]] }).ctx, MARGIN_PROBE_WIDTH, 1131) === null);
     check('an unreadable canvas is treated as having no line', (() => { const u = recordingContext(); (u.ctx as unknown as { getImageData: () => never }).getImageData = () => { throw new Error('tainted'); }; return findMarginLine(u.ctx, MARGIN_PROBE_WIDTH, 1131) === null; })());
     check('a narrow page with a margin line keeps both pieces at every zoom', (() => { const edge = 33; return zooms.every((z) => { const r = footer(300, 900, scaleFor(300, z, 2), edge); return r.calls.length === 2 && r.calls.find((c) => c.align === 'left')!.x > edge; }); })());

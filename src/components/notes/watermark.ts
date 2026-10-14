@@ -49,19 +49,26 @@ export interface WatermarkIdentity {
 
 const SITE = 'cookienotes.app';
 const FONT_FAMILY = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-/** Footer text size as a fraction of the page's width (about 8 pt on A4)… */
-const FONT_FRACTION = 0.0135;
+/** Footer text size as a fraction of the page's width (about 11 pt on A4)… */
+const FONT_FRACTION = 0.019;
 /** …kept between these many page units so it is neither lost on a small page nor loud on a big one. */
-const MIN_FONT = 6;
-const MAX_FONT = 12;
-/** Distance from the bottom and right edges, as a fraction of the page's width (never less than MIN_PAD). */
+const MIN_FONT = 8;
+const MAX_FONT = 16;
+/** Distance from the bottom edge (and the left, with no margin line), as a fraction of the page's width (never less than MIN_PAD). */
 const PAD_FRACTION = 0.015;
 const MIN_PAD = 6;
+/** Distance from the right edge — more room than the bottom, so the page number is not crowded against the edge. */
+const RIGHT_PAD_FRACTION = 0.03;
+const MIN_RIGHT_PAD = 10;
 /** Clear space between a margin line and the left text, and between the two texts. */
 const MARGIN_GAP_FRACTION = 0.012;
 const TEXT_GAP_FRACTION = 0.024;
-/** The text is mid-grey at this opacity: a quiet printed footer, not a stamp. */
+/** The text is grey at 50% opacity: a quiet printed footer, not a stamp. */
 const INK = 'rgba(55, 55, 55, 0.5)';
+/** The same quiet footer on a dark page (a dark-mode notebook), where dark grey would vanish: light grey, same opacity. */
+const INK_ON_DARK = 'rgba(225, 225, 225, 0.5)';
+/** A page whose bottom edge averages darker than this (0–255) is a dark page. */
+const DARK_PAGE_LUMINANCE = 110;
 
 /** The width, in canvas pixels, the page is rendered at to look for a margin line. The same for every zoom. */
 export const MARGIN_PROBE_WIDTH = 800;
@@ -74,9 +81,16 @@ const MAX_LINE_FRACTION = 0.0175;
 /** Cap on the pixels read back while looking, so a very large canvas stays cheap. */
 const MAX_SCAN_PIXELS = 1_500_000;
 
-/** Red enough to be a ruled-paper margin line, in any of its usual shades — including a hairline anti-aliased toward white. */
+/**
+ * Red-dominant, whatever the brightness: a margin line is bright red on white paper,
+ * but on a dark page (a dark-mode notebook) it is a dim red such as #63262C, and a
+ * hairline anti-aliased toward its background is a washed-out one. What they share is
+ * that red clearly leads the other channels — by a margin and by a ratio — which plain
+ * paper, ruled lines, pencil and ink (all neutral or blue-ish) never do.
+ */
 function isRed(r: number, g: number, b: number): boolean {
-  return r >= 150 && r - g >= 45 && r - b >= 45;
+  const other = Math.max(g, b);
+  return r >= 60 && r - other >= 22 && r >= other * 1.25;
 }
 
 /**
@@ -123,6 +137,30 @@ export function findMarginLine(ctx: CanvasRenderingContext2D, width: number, hei
   return rightmost + 1;
 }
 
+/**
+ * Whether the page is dark along its bottom edge, where the footer goes — so the
+ * footer can use ink that shows against it. Reads the bottom tenth of the rendered
+ * page; if the canvas cannot be read the page is assumed light.
+ */
+export function pageIsDark(ctx: CanvasRenderingContext2D, width: number, height: number): boolean {
+  if (width < 4 || height < 10 || typeof ctx.getImageData !== 'function') return false;
+  const band = Math.max(2, Math.floor(height * 0.1));
+  let data: Uint8ClampedArray;
+  try {
+    data = ctx.getImageData(0, height - band, width, band).data;
+  } catch {
+    return false;
+  }
+  let sum = 0;
+  let count = 0;
+  // Every 3rd pixel is plenty for an average.
+  for (let i = 0; i < data.length; i += 12) {
+    sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    count += 1;
+  }
+  return count > 0 && sum / count < DARK_PAGE_LUMINANCE;
+}
+
 /** The footer's geometry, entirely in page units measured from the page's top-left corner. */
 export interface FooterLayout {
   /** Text size. */
@@ -154,7 +192,7 @@ export function layoutFooter(
 ): FooterLayout {
   const pad = Math.max(MIN_PAD, pageWidth * PAD_FRACTION);
   const fontSize = Math.min(MAX_FONT, Math.max(MIN_FONT, pageWidth * FONT_FRACTION));
-  const rightX = pageWidth - pad;
+  const rightX = pageWidth - Math.max(MIN_RIGHT_PAD, pageWidth * RIGHT_PAD_FRACTION);
   const rightWidth = measure(right, fontSize);
   const leftWidth = measure(SITE, fontSize);
 
@@ -173,6 +211,7 @@ export function layoutFooter(
  * @param pageHeight the page's height in PDF units
  * @param scale      canvas pixels per PDF unit — the viewport scale the page itself was rendered with
  * @param marginRight x (PDF units) of the right edge of a red margin line on this page, or null
+ * @param dark       the page is dark along its bottom edge, so the footer uses light ink
  */
 export function drawFooter(
   ctx: CanvasRenderingContext2D,
@@ -182,6 +221,7 @@ export function drawFooter(
   identity: WatermarkIdentity,
   pageNumber: number,
   marginRight: number | null = null,
+  dark = false,
 ): void {
   const reference = identity.reference.trim();
   if (!reference || !(pageWidth > 0) || !(pageHeight > 0) || !(scale > 0)) return;
@@ -197,7 +237,7 @@ export function drawFooter(
     };
     const layout = layoutFooter(pageWidth, pageHeight, `${reference} · Page ${pageNumber}`, marginRight, measure);
 
-    ctx.fillStyle = INK;
+    ctx.fillStyle = dark ? INK_ON_DARK : INK;
     ctx.textBaseline = 'alphabetic';
     ctx.font = `${layout.fontSize}px ${FONT_FAMILY}`;
     ctx.textAlign = 'right';
