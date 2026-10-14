@@ -216,11 +216,16 @@ export function PdfPage({
         ? { minHeight: '18rem' }
         : { aspectRatio: '1 / 1.414' };
 
+  // The card has no border and no white background of its own. The canvas is as tall as the
+  // page happens to scale to — usually a fraction of a pixel — so anything behind it that
+  // differs from the page shows at the top and bottom edges as a thin light line. Behind the
+  // page is the same dark card colour as the surrounding app, which is invisible against a
+  // dark page, and a white page's own paper covers it.
   return (
     <div
       data-page-wrapper={pageNumber}
       data-page-status={status}
-      className="relative w-full max-w-full overflow-hidden rounded-md border border-border bg-white shadow-sm"
+      className="relative w-full max-w-full overflow-hidden rounded-md bg-card shadow-sm"
       style={placeholder}
     >
       <canvas
