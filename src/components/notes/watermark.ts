@@ -34,8 +34,9 @@
  * ## Respecting a margin line
  *
  * Many notes are drawn on ruled paper with a red margin line down the left. The
- * left text must start to the right of that line, so the page is probed for one
- * (see `findMarginLine`) — once per page, at a fixed resolution, so the answer
+ * left text must start to the right of that line, so the painted page is looked at
+ * for one (see `findMarginLine`) — read off the page already on screen, scaled to a
+ * fixed width and remembered per page, so there is no extra render and the answer
  * does not depend on the zoom — and the text is placed just beyond it, in page
  * units. If there is no line the text starts at the ordinary left padding.
  *
@@ -70,7 +71,7 @@ const INK_ON_DARK = 'rgba(225, 225, 225, 0.5)';
 /** A page whose bottom edge averages darker than this (0–255) is a dark page. */
 const DARK_PAGE_LUMINANCE = 110;
 
-/** The width, in canvas pixels, the page is rendered at to look for a margin line. The same for every zoom. */
+/** The width, in canvas pixels, the painted page is scaled to when it is looked at. The same for every zoom. */
 export const MARGIN_PROBE_WIDTH = 800;
 /** How far into the page, from the left, a margin line is looked for. */
 const MARGIN_SEARCH_FRACTION = 0.35;

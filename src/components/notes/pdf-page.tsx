@@ -143,12 +143,6 @@ export function PdfPage({
           scale *= Math.sqrt(MAX_CANVAS_PIXELS / area);
         }
 
-        // What the page looks like where the footer goes — its red margin line (in page
-        // units) and whether it is a dark page — found once per page at a fixed
-        // resolution, so the answer is the same at every zoom.
-        const look = identity ? await probePage(doc, page, base.width, registerTask) : null;
-        if (cancelled) return;
-
         const viewport = page.getViewport({ scale });
         const pixelWidth = Math.max(1, Math.floor(viewport.width));
         const pixelHeight = Math.max(1, Math.floor(viewport.height));
@@ -182,7 +176,15 @@ export function PdfPage({
         // the device pixel ratio and any step-back for Safari's limit), so it scales with
         // the page exactly as the page's own content does. It takes no space and adds no
         // height: the canvas is exactly the PDF page.
-        if (identity) drawFooter(ctx, base.width, base.height, viewport.scale, identity, pageNumber, look?.marginRight ?? null, look?.dark ?? false);
+        //
+        // What the footer needs to know about the page (its red margin line, whether it is
+        // dark) is read off the page just painted, in the same step as drawing the footer —
+        // so there is no second render, no delay before the page appears, and no visible
+        // fix-up afterwards.
+        if (identity) {
+          const look = lookAtPage(doc, pageNumber, canvas, base.width);
+          drawFooter(ctx, base.width, base.height, viewport.scale, identity, pageNumber, look?.marginRight ?? null, look?.dark ?? false);
+        }
 
         taskRef.current = null;
         setStatus('done');
@@ -273,55 +275,61 @@ interface PageLook {
 
 /**
  * Pages already looked at, by document and page. How a page looks is a property of the
- * page, not of how big it is being shown, so it is looked at once.
+ * page, not of how big it is being shown, so it is looked at once — the first time it is
+ * painted — and every later zoom reuses the answer.
  */
 const lookCache = new WeakMap<object, Map<number, PageLook>>();
 
+/** A first paint narrower than this is too coarse to find a hairline margin line reliably. */
+const MIN_LOOK_WIDTH = 360;
+
 /**
- * Renders the page once, off screen, at a fixed width and reads it back for its margin
- * line and its brightness, converted to page units and remembered, so changing the zoom
- * neither repeats the work nor changes the result. A probe that fails or is cancelled is
- * not cached and yields null: the page is still drawn, with the footer at its plain
- * padding in the default ink.
+ * Reads the margin line and the brightness off a page that has just been painted.
+ *
+ * The painted canvas is scaled down (or up) to a fixed width on a small scratch canvas and
+ * read from there, so the answer does not depend on how large the page happens to be
+ * drawn, no second render is needed, and reading a very large canvas back is avoided.
+ * Called before the footer is drawn, so the footer is never mistaken for part of the page.
+ * Returns null if the page cannot be read, or was painted too small to judge — the footer is
+ * then drawn at its plain padding in the default ink, and the page is looked at again next time.
  */
-async function probePage(
+function lookAtPage(
   doc: import('pdfjs-dist').PDFDocumentProxy,
-  page: import('pdfjs-dist').PDFPageProxy,
+  pageNumber: number,
+  painted: HTMLCanvasElement,
   pageWidth: number,
-  registerTask: PdfPageProps['registerTask'],
-): Promise<PageLook | null> {
+): PageLook | null {
   let pages = lookCache.get(doc);
   if (!pages) {
     pages = new Map();
     lookCache.set(doc, pages);
   }
-  const known = pages.get(page.pageNumber);
+  const known = pages.get(pageNumber);
   if (known) return known;
+  if (painted.width < MIN_LOOK_WIDTH) return null;
 
-  const scale = MARGIN_PROBE_WIDTH / pageWidth;
-  const viewport = page.getViewport({ scale });
-  const probe = document.createElement('canvas');
-  probe.width = Math.max(1, Math.floor(viewport.width));
-  probe.height = Math.max(1, Math.floor(viewport.height));
-  const ctx = probe.getContext('2d', { alpha: false, willReadFrequently: true });
-  if (!ctx) return null;
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, probe.width, probe.height);
-
-  const task = page.render({ canvasContext: ctx, viewport });
-  const unregister = registerTask(task);
   try {
-    await task.promise;
+    const width = MARGIN_PROBE_WIDTH;
+    const height = Math.max(1, Math.round((width * painted.height) / painted.width));
+    const scratch = document.createElement('canvas');
+    scratch.width = width;
+    scratch.height = height;
+    const ctx = scratch.getContext('2d', { alpha: false, willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(painted, 0, 0, width, height);
+
+    const edge = findMarginLine(ctx, width, height);
+    const look: PageLook = {
+      marginRight: edge === null ? null : edge / (width / pageWidth),
+      dark: pageIsDark(ctx, width, height),
+    };
+    pages.set(pageNumber, look);
+    return look;
   } catch {
     return null;
-  } finally {
-    unregister();
   }
-
-  const edge = findMarginLine(ctx, probe.width, probe.height);
-  const look: PageLook = { marginRight: edge === null ? null : edge / scale, dark: pageIsDark(ctx, probe.width, probe.height) };
-  pages.set(page.pageNumber, look);
-  return look;
 }
 
 /**

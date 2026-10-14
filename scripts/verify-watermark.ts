@@ -334,6 +334,8 @@ async function main() {
     const { readFile } = await import('node:fs/promises');
     const pdfPage = await readFile(path.join(process.cwd(), 'src/components/notes/pdf-page.tsx'), 'utf8');
     check('no footer strip: the canvas is exactly the PDF page (height = the viewport\'s, no added height)', /canvas\.height = pixelHeight;/.test(pdfPage) && !/footerHeight|FOOTER_FRACTION|strip\b/.test(pdfPage.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '')));
+    check('the page is rendered once only — no extra off-screen render to look for the margin line', (pdfPage.match(/page\.render\(/g) ?? []).length === 1 && !/createElement\('canvas'\)[\s\S]{0,400}page\.render/.test(pdfPage));
+    check('the margin line and brightness are read off the painted page, after it finishes and before the footer is drawn (so no delay and no visible fix-up)', /await task\.promise;[\s\S]*lookAtPage\([\s\S]*drawFooter\(/.test(pdfPage) && !/await probe/.test(pdfPage));
     check('the footer is drawn onto the page canvas under the page\'s own viewport scale — not an HTML overlay', /drawFooter\(ctx, base\.width, base\.height, viewport\.scale,/.test(pdfPage) && !/<footer|absolute.*cookienotes/i.test(pdfPage));
     const noteViewer = await readFile(path.join(process.cwd(), 'src/components/notes/note-viewer.tsx'), 'utf8');
     const notesPage = await readFile(path.join(process.cwd(), 'src/app/(reader)/notes/[id]/page.tsx'), 'utf8');
