@@ -19,8 +19,8 @@ import { prisma } from '@/lib/prisma';
  *    reversed or guessed without the server's secret;
  *  - SERVER-DERIVED: it is computed here from the authenticated session's user —
  *    nothing the browser sends can name a reference;
- *  - LOOKUP-ABLE: an admin pastes it into the users search and finds the account
- *    (`userIdsForReference`).
+ *  - LOOKUP-ABLE: an admin pastes it — or the whole footer line — into the users search and
+ *    finds the account (`parseReference`, `userIdsForReference`).
  *
  * The key comes from AUTH_SECRET through its own HKDF label, so it is never the
  * same key as anything else derived from that secret. Rotating AUTH_SECRET would
@@ -50,10 +50,33 @@ export function accountReference(userId: string): string {
   return `CN-${out}`;
 }
 
+/** The look-alikes Crockford base32 reads as their digits, so a code misread off a screenshot still resolves. */
+const LOOK_ALIKES: Record<string, string> = { O: '0', I: '1', L: '1' };
+
+/**
+ * Finds a reference in whatever an admin typed or pasted, and returns it in canonical form
+ * (`CN-7K2M9QXA`), or null if there is none.
+ *
+ * It accepts what really gets pasted: the code alone, the whole footer line
+ * (`CN-7K2M9QXA · Page 3`), any case, a space or no dash after `CN`, and the characters the
+ * alphabet leaves out because they are easily confused (an O or an I or an L read off a
+ * screenshot is taken as the 0 or 1 it must have been). A bare eight-character code with no
+ * `CN` is accepted too. Anything else — a name, an email — is not a reference.
+ */
+export function parseReference(text: string): string | null {
+  const upper = text.toUpperCase();
+  const prefixed = /(?:^|[^0-9A-Z])CN[\s\-\u2013\u2014_.]*([0-9A-Z]{8})(?![0-9A-Z])/.exec(upper);
+  const bare = /^[0-9A-Z]{8}$/.test(upper.trim()) ? upper.trim() : null;
+  const candidate = prefixed?.[1] ?? bare;
+  if (!candidate) return null;
+  const code = `CN-${[...candidate].map((c) => LOOK_ALIKES[c] ?? c).join('')}`;
+  return REFERENCE_PATTERN.test(code) ? code : null;
+}
+
 /** Which accounts carry this reference (normally one). Empty for anything that is not a reference. */
 export async function userIdsForReference(reference: string): Promise<string[]> {
-  const wanted = reference.trim().toUpperCase();
-  if (!REFERENCE_PATTERN.test(wanted)) return [];
+  const wanted = parseReference(reference);
+  if (!wanted) return [];
   const users = await prisma.user.findMany({ select: { id: true } });
   return users.filter((user) => accountReference(user.id) === wanted).map((user) => user.id);
 }

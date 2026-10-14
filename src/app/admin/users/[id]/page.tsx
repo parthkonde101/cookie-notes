@@ -21,6 +21,7 @@ import {
 } from '@/app/admin/_actions/users';
 import { revokeAccessAction } from '@/app/admin/_actions/access';
 import { prisma } from '@/lib/prisma';
+import { accountReference } from '@/lib/access/account-reference';
 import { requireAdmin } from '@/lib/auth/guards';
 import { entitledNoteFilter, isPreviewMode } from '@/lib/access/entitlements';
 import { describeDevice } from '@/lib/request';
@@ -95,7 +96,7 @@ export default async function AdminUserPage({ params }: { params: Promise<{ id: 
             {user.role === 'ADMIN' && <Badge>admin</Badge>}
           </span>
         }
-        description={`${user.email} · joined ${formatDateTime(user.createdAt)} · ${user._count.noteViews} reading sessions`}
+        description={`${user.email} · PDF code ${accountReference(user.id)} · joined ${formatDateTime(user.createdAt)} · ${user._count.noteViews} reading sessions`}
         actions={
           <>
             {user.status === 'ACTIVE' ? (

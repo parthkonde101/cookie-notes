@@ -12,7 +12,7 @@ import { ActionForm, Field } from '@/components/admin/action-form';
 import { StatCard } from '@/components/admin/stat-card';
 import { createUserAction } from '@/app/admin/_actions/users';
 import { env } from '@/lib/env';
-import { userIdsForReference } from '@/lib/access/account-reference';
+import { accountReference, userIdsForReference } from '@/lib/access/account-reference';
 import { prisma } from '@/lib/prisma';
 import { requireAdmin } from '@/lib/auth/guards';
 import { liveCutoff } from '@/lib/auth/session';
@@ -39,7 +39,8 @@ export default async function AdminUsersPage({
   const query = (q ?? '').trim();
   const page = Math.max(1, Number(pageParam) || 1);
 
-  // A footer reference (CN-7K2M9QXA) finds the account it was printed for.
+  // The code printed in the footer of a student's PDF pages (CN-7K2M9QXA) finds the account
+  // it was printed for — typed, or pasted with the rest of the footer line.
   const referenced = await userIdsForReference(query);
 
   const where: Prisma.UserWhereInput = {
@@ -146,7 +147,7 @@ export default async function AdminUsersPage({
             <Input
               name="q"
               defaultValue={query}
-              placeholder="Search name, email, college, programme or CN- reference"
+              placeholder="Search name, email, college, programme or PDF code (CN-…)"
               className="min-w-[200px] flex-1"
             />
             <Select name="status" defaultValue={status ?? 'all'} wrapperClassName="w-auto">
@@ -190,6 +191,13 @@ export default async function AdminUsersPage({
                           {user.name}
                         </Link>
                         <p className="text-xs text-muted-foreground">{user.email}</p>
+                        {/* The code printed in the footer of every PDF page this student reads. */}
+                        <p
+                          className="mt-0.5 font-mono text-[11px] text-muted-foreground/80"
+                          title="PDF code — printed in the footer of every page this student reads"
+                        >
+                          {accountReference(user.id)}
+                        </p>
                       </TableCell>
 
                       <TableCell className="text-sm text-muted-foreground">

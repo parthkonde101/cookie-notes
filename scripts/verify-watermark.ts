@@ -155,7 +155,7 @@ async function main() {
   }
   await cleanup();
 
-  const { accountReference, userIdsForReference, REFERENCE_PATTERN } = await import('../src/lib/access/account-reference');
+  const { accountReference, userIdsForReference, parseReference, REFERENCE_PATTERN } = await import('../src/lib/access/account-reference');
   const { drawFooter, layoutFooter, NOTEBOOK_MARGIN_FRACTION, NOTEBOOK_IS_DARK } = await import('../src/components/notes/watermark');
   const { readWatermarkSetting } = await import('../src/lib/env');
 
@@ -221,6 +221,8 @@ async function main() {
     check('it is keyed by the server secret — another secret gives another reference (so it cannot be guessed from an id)', rotated !== ref);
     check('and returns to the same value with the same secret', accountReference(alice.id) === ref);
     check('an admin can look an account up from its reference', JSON.stringify(await userIdsForReference(ref)) === JSON.stringify([alice.id]));
+    check('parseReference takes a bare code, the whole footer line, any case, spacing and dash styles', ['CN-7K2M9QXA', 'cn-7k2m9qxa', 'CN-7K2M9QXA · Page 12', 'see CN 7K2M9QXA please', 'CN7K2M9QXA', 'CN–7K2M9QXA', '7K2M9QXA'].every((t) => parseReference(t) === 'CN-7K2M9QXA'));
+    check('parseReference reads look-alikes as the digits (O→0, I/L→1) and refuses what is not a code', parseReference('CN-7K2MOQXA') === 'CN-7K2M0QXA' && parseReference('CN-7K2MIQXA') === 'CN-7K2M1QXA' && parseReference('CN-7K2MLQXA') === 'CN-7K2M1QXA' && ['', 'alice', 'CN-', 'CN-7K2M9QX', 'CN-7K2M9QXAB', 'CN-7K2U9QXA', 'alice@example.com', 'Mark bob'].every((t) => parseReference(t) === null));
     check('lowercase and spaces are forgiven; anything that is not a reference finds nothing', (await userIdsForReference(` ${ref.toLowerCase()} `)).length === 1 && (await userIdsForReference('alice')).length === 0 && (await userIdsForReference('CN-')).length === 0 && (await userIdsForReference('')).length === 0);
   }
 
@@ -354,7 +356,16 @@ async function main() {
     const html = await search(accountReference(alice.id));
     check('pasting a footer reference into the users search shows that account', html.includes(alice.email) && !html.includes(bob.email));
     check('another reference shows its own account', (await search(accountReference(bob.id))).includes(bob.email));
-    check('the search box says it accepts one', /CN- reference/.test(html));
+    check('the search box says it accepts a PDF code', /PDF code \(CN-/.test(html));
+    const aliceRef = accountReference(alice.id);
+    const only = (h: string) => h.includes(alice.email) && !h.includes(bob.email);
+    check('pasting the whole footer line (code, dot, page) works', only(await search(`${aliceRef} · Page 7`)));
+    check('lowercase, extra spaces and text around it work', only(await search(`  from the screenshot: ${aliceRef.toLowerCase()}  `)));
+    check('a space or no dash after CN works, and so does the bare eight characters', only(await search(aliceRef.replace('-', ' '))) && only(await search(aliceRef.replace('-', ''))) && only(await search(aliceRef.slice(3))));
+    check('a code misread off a screenshot (O for 0, I or L for 1) still finds the account', only(await search(aliceRef.replace(/0/g, 'O').replace(/1/g, 'L'))));
+    check('the list shows each student\'s PDF code so it can be matched by eye', html.includes(aliceRef) && (await search('')).includes(accountReference(bob.id)));
+    check('and the student\'s own page shows it', (await (await adminClient.request(`/admin/users/${alice.id}`)).text()).includes(aliceRef));
+    check('ordinary searches are unaffected (by email, by name)', only(await search(alice.email)) && (await search('Mark bob')).includes(bob.email));
     const none = await search('CN-00000000');
     check('an unknown reference shows no student', !none.includes(`${PREFIX}+alice`) && !none.includes(`${PREFIX}+bob`));
     check('a student cannot use the admin search (redirected away)', (await (await aliceClient.request('/admin/users?q=x')).text()).includes('wmtest+alice@example.com') === false);
