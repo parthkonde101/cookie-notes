@@ -5,8 +5,11 @@
 // * Entitlements are the single source of truth for "can this user open this note".
 //   They are scoped (NOTE / UNIT / SUBJECT / SEMESTER / ALL) so an admin can grant
 //   broadly today and a payment provider can grant the exact same rows tomorrow.
-//   `Entitlement.orderId` already points at the (currently unused) Order table, so
-//   adding checkout later means writing Orders and reusing the existing grant code.
+//   `Entitlement.orderId` already points at the Order table. Purchase-derived
+//   access is the one exception to "entitlements are the single source": it lives
+//   in `purchase_grants`, one row per note per order item, so a refund can revoke
+//   exactly what a purchase gave without touching an admin or promotional grant.
+//   `checkNoteAccess` consults both; see lib/access/entitlements.ts.
 // * Sessions are database-backed and store only a SHA-256 hash of the session token,
 //   which makes "one active session per account", remote termination and idle expiry
 //   enforceable server side.
@@ -103,6 +106,39 @@ enum OrderStatus {
   FAILED
   REFUNDED
   CANCELLED
+  PARTIALLY_REFUNDED
+}
+
+/// What an order item is: one note, or a bundle of notes. Quantity is always 1
+/// for now; the column exists so the order model does not need to change.
+enum ProductType {
+  NOTE
+  BUNDLE
+}
+
+/// The gateway's view of one payment attempt. An order can have several
+/// (a failed card, then a UPI success), each its own row.
+enum PaymentTxStatus {
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum RefundStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
+
+/// Processing state of one webhook delivery, so a failure after receipt can be retried.
+enum PaymentEventStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  IGNORED
 }
 
 enum EventType {
@@ -214,6 +250,11 @@ enum AuditAction {
   FEEDBACK_FEATURED
   FEEDBACK_UNFEATURED
   FEEDBACK_ARCHIVED
+  NOTE_PRICE_CHANGED
+  BUNDLE_CREATED
+  BUNDLE_UPDATED
+  BUNDLE_DELETED
+  REFUND_INITIATED
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +353,9 @@ model User {
   noteViews           NoteView[]
   passwordResets      PasswordResetToken[]
   orders              Order[]
+  purchaseGrants      PurchaseGrant[]                @relation("PurchaseGrantUser")
+  refundsInitiated    Refund[]                       @relation("RefundInitiator")
+  bundlesCreated      Bundle[]                       @relation("BundleCreator")
   unitSubscriptions   UnitNotificationSubscription[]
   noteNotifications   NoteNotification[]
   verificationTokens  EmailVerificationToken[]
@@ -491,6 +535,9 @@ model Subject {
   notes    Note[]
   pyqs     Pyq[]
 
+  bundleSubjects BundleSubject[]
+  coveredBundles Bundle[]        @relation("BundleCover")
+
   @@unique([semesterId, name])
   @@index([semesterId, isArchived, position])
   @@map("subjects")
@@ -669,6 +716,16 @@ model Note {
   /// catalogue shows, so the paid model is visible before payments exist.
   priceMinor Int @default(0)
 
+  /// Whether this note is SOLD. Deliberately separate from `visibility` and
+  /// `priceMinor`: a legacy price on a note that is not for sale does nothing, and
+  /// a free note can never become purchasable because a price field has a value.
+  ///
+  /// Enforced in the database (see the commerce migration): a paid note is
+  /// RESTRICTED and has a price in the allowed range. For a paid note the
+  /// OPEN_ACCESS_MODE fallback does not apply — it is readable through an
+  /// entitlement, an admin grant, or a purchase, and nothing else.
+  isPaid Boolean @default(false)
+
   viewCount    Int       @default(0)
   lastViewedAt DateTime?
 
@@ -678,15 +735,18 @@ model Note {
   publishedAt  DateTime?
   archivedAt   DateTime?
 
-  subject       Subject            @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  unit          Unit?              @relation(fields: [unitId], references: [id], onDelete: SetNull)
-  topic         Topic?             @relation(fields: [topicId], references: [id], onDelete: SetNull)
-  uploadedBy    User?              @relation("NoteUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
-  versions      NoteVersion[]
-  entitlements  Entitlement[]
-  views         NoteView[]
-  events        ActivityEvent[]
-  notifications NoteNotification[]
+  subject        Subject            @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  unit           Unit?              @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  topic          Topic?             @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  uploadedBy     User?              @relation("NoteUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  versions       NoteVersion[]
+  entitlements   Entitlement[]
+  views          NoteView[]
+  events         ActivityEvent[]
+  notifications  NoteNotification[]
+  bundleItems    BundleItem[]
+  orderItems     OrderItem[]
+  purchaseGrants PurchaseGrant[]
 
   /// One unit, one PDF. Postgres treats NULLs as distinct in a unique index, so
   /// this constrains only notes that actually belong to a unit: each unit gets
@@ -758,11 +818,19 @@ model Entitlement {
   @@map("entitlements")
 }
 
-/// Not used by the MVP. Present so that adding a payment provider later is a
-/// matter of writing rows here and calling the existing grant helper.
+/// One purchase attempt by one student.
+///
+/// The server decides everything on it — product, amount, currency — and the
+/// browser is never trusted for any of it. `amountMinor` is what the student was
+/// asked to pay, fixed at creation; it never changes afterwards. Money that moves
+/// later (refunds) is recorded in its own rows and summed into `refundedMinor`.
+///
+/// `userId` is nullable and SET NULL on delete, with the buyer's email and name
+/// copied onto the order, so deleting an account never erases the financial
+/// record. Orders are never deleted by application code.
 model Order {
   id                String      @id @default(cuid())
-  userId            String
+  userId            String?
   status            OrderStatus @default(CREATED)
   amountMinor       Int         @default(0)
   currency          String      @default("INR")
@@ -773,11 +841,223 @@ model Order {
   createdAt         DateTime    @default(now())
   paidAt            DateTime?
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  entitlements Entitlement[]
+  /// The gateway receipt reference (our order id), unique so a retry cannot create twins.
+  receipt       String?   @unique
+  customerEmail String?
+  customerName  String?
+  failedAt      DateTime?
+  cancelledAt   DateTime?
+  /// Total refunded so far, in minor units; never above `amountMinor`.
+  refundedMinor Int       @default(0)
+  updatedAt     DateTime  @default(now()) @updatedAt
 
+  user         User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  entitlements Entitlement[]
+  items        OrderItem[]
+  payments     PaymentTransaction[]
+  refunds      Refund[]
+
+  @@unique([provider, providerOrderId])
   @@index([userId, status])
+  @@index([status, createdAt])
+  @@index([paidAt])
   @@map("orders")
+}
+
+/// What an order bought, frozen at the moment it was created.
+///
+/// `title`, the prices and `contents` are snapshots: editing or deleting the
+/// product later changes nothing here, so a past purchase stays understandable
+/// and a bundle's contents at purchase time are never rewritten. `noteId` and
+/// `bundleId` are SET NULL when the product goes away; the snapshot remains.
+model OrderItem {
+  id             String      @id @default(cuid())
+  orderId        String
+  productType    ProductType
+  noteId         String?
+  bundleId       String?
+  title          String
+  quantity       Int         @default(1)
+  unitPriceMinor Int
+  discountMinor  Int         @default(0)
+  amountMinor    Int
+  currency       String      @default("INR")
+  /// [{ noteId, title, subjectId, priceMinor }] — the notes this item delivers.
+  contents       Json
+  createdAt      DateTime    @default(now())
+
+  order  Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  note   Note?           @relation(fields: [noteId], references: [id], onDelete: SetNull)
+  bundle Bundle?         @relation(fields: [bundleId], references: [id], onDelete: SetNull)
+  grants PurchaseGrant[]
+
+  @@index([orderId])
+  @@index([noteId])
+  @@index([bundleId])
+  @@map("order_items")
+}
+
+/// One payment attempt as the gateway reports it. Unique on the gateway's payment
+/// id, so the same payment can never be recorded or fulfilled twice.
+model PaymentTransaction {
+  id                String          @id @default(cuid())
+  orderId           String
+  provider          String
+  providerPaymentId String
+  providerOrderId   String?
+  status            PaymentTxStatus @default(PENDING)
+  amountMinor       Int
+  currency          String
+  method            String?
+  errorCode         String?
+  errorDescription  String?
+  refundedMinor     Int             @default(0)
+  /// Set when something about this payment needs a human (wrong amount, a second
+  /// payment on an order that was already paid). Never silently dropped.
+  flag              String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @default(now()) @updatedAt
+  capturedAt        DateTime?
+  failedAt          DateTime?
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  refunds Refund[]
+
+  @@unique([provider, providerPaymentId])
+  @@index([orderId])
+  @@index([status, createdAt])
+  @@map("payment_transactions")
+}
+
+/// A refund, requested by an admin here or made in the gateway's dashboard.
+/// `receipt` is sent to the gateway, which treats it as an idempotency key.
+model Refund {
+  id                   String       @id @default(cuid())
+  orderId              String
+  paymentTransactionId String
+  provider             String
+  providerRefundId     String?
+  receipt              String       @unique
+  amountMinor          Int
+  status               RefundStatus @default(PENDING)
+  reason               String?
+  failureReason        String?
+  initiatedById        String?
+  createdAt            DateTime     @default(now())
+  processedAt          DateTime?
+  failedAt             DateTime?
+
+  order       Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  transaction PaymentTransaction @relation(fields: [paymentTransactionId], references: [id], onDelete: Cascade)
+  initiatedBy User?              @relation("RefundInitiator", fields: [initiatedById], references: [id], onDelete: SetNull)
+  grants      PurchaseGrant[]
+
+  @@unique([provider, providerRefundId])
+  @@index([orderId])
+  @@index([status, processedAt])
+  @@map("refunds")
+}
+
+/// Every webhook delivery, recorded before it is acted on. Unique on the gateway's
+/// event id, so a redelivery is recognised; `status` and `attempts` make a failure
+/// after receipt retryable. Only the fields processing needs are kept.
+model PaymentEvent {
+  id           String             @id @default(cuid())
+  provider     String
+  eventId      String
+  eventType    String
+  status       PaymentEventStatus @default(RECEIVED)
+  attempts     Int                @default(0)
+  receivedAt   DateTime           @default(now())
+  processedAt  DateTime?
+  errorMessage String?
+  data         Json?
+
+  @@unique([provider, eventId])
+  @@index([status, receivedAt])
+  @@map("payment_events")
+}
+
+/// Access to one note that came from a PURCHASE.
+///
+/// Purchase-derived access lives here, not in `entitlements`, so it can never
+/// overwrite or be confused with an admin, promotional or sign-up grant (those
+/// keep their own provenance in `entitlements.source`). A refund revokes exactly
+/// the rows of its own order item; every other source of access is untouched.
+/// A bundle order item has one row per note it delivered, taken from the order
+/// item's snapshot — later bundle edits never add to or remove from it.
+model PurchaseGrant {
+  id           String    @id @default(cuid())
+  userId       String
+  noteId       String
+  orderItemId  String
+  grantedAt    DateTime  @default(now())
+  revokedAt    DateTime?
+  revokeReason String?
+  refundId     String?
+
+  user      User      @relation("PurchaseGrantUser", fields: [userId], references: [id], onDelete: Cascade)
+  note      Note      @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  refund    Refund?   @relation(fields: [refundId], references: [id], onDelete: SetNull)
+
+  @@unique([orderItemId, noteId])
+  @@index([userId, noteId, revokedAt])
+  @@map("purchase_grants")
+}
+
+/// A set of notes sold together at one price the admin chooses.
+model Bundle {
+  id             String   @id @default(cuid())
+  title          String
+  description    String?
+  priceMinor     Int
+  currency       String   @default("INR")
+  isActive       Boolean  @default(false)
+  isFeatured     Boolean  @default(false)
+  position       Int      @default(0)
+  /// The cover is chosen from an existing subject's notebook cover, so no new
+  /// upload system is needed. Null falls back to the first promoted subject's.
+  coverSubjectId String?
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  coverSubject Subject?        @relation("BundleCover", fields: [coverSubjectId], references: [id], onDelete: SetNull)
+  createdBy    User?           @relation("BundleCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  items        BundleItem[]
+  subjects     BundleSubject[]
+  orderItems   OrderItem[]
+
+  @@index([isActive, isFeatured, position])
+  @@map("bundles")
+}
+
+model BundleItem {
+  id       String @id @default(cuid())
+  bundleId String
+  noteId   String
+  position Int    @default(0)
+
+  bundle Bundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  note   Note   @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@unique([bundleId, noteId])
+  @@index([noteId])
+  @@map("bundle_items")
+}
+
+/// The subject pages a bundle is promoted on.
+model BundleSubject {
+  bundleId  String
+  subjectId String
+
+  bundle  Bundle  @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@id([bundleId, subjectId])
+  @@index([subjectId])
+  @@map("bundle_subjects")
 }
 
 // ---------------------------------------------------------------------------

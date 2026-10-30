@@ -16,6 +16,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { formatInr } from '@/lib/commerce/money';
 import { Button } from '@/components/ui/button';
 import { Input, Select, Textarea } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -627,11 +628,8 @@ function UnitRow({
 
         {note && (
           <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-            {note.priceMinor > 0 && (
-              <span className="text-xs tabular-nums text-muted-foreground">
-                {currencySymbol}
-                {note.priceMinor / 100}
-              </span>
+            {note.isPaid && (
+              <Badge variant="default">{formatInr(note.priceMinor)}</Badge>
             )}
             <Badge
               variant={
@@ -644,7 +642,7 @@ function UnitRow({
             >
               {note.status.toLowerCase()}
             </Badge>
-            {note.visibility === 'FREE' && <Badge variant="secondary">free</Badge>}
+            {!note.isPaid && note.visibility === 'FREE' && <Badge variant="secondary">free</Badge>}
           </div>
         )}
 
@@ -793,12 +791,7 @@ function NoteRow({
       <FileText className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate">{note.title}</span>
 
-      {note.priceMinor > 0 && (
-        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-          {currencySymbol}
-          {note.priceMinor / 100}
-        </span>
-      )}
+      {note.isPaid && <Badge variant="default">{formatInr(note.priceMinor)}</Badge>}
       <Badge
         variant={
           note.status === 'PUBLISHED' ? 'success' : note.status === 'DRAFT' ? 'warning' : 'outline'
@@ -806,7 +799,7 @@ function NoteRow({
       >
         {note.status.toLowerCase()}
       </Badge>
-      {note.visibility === 'FREE' && <Badge variant="secondary">free</Badge>}
+      {!note.isPaid && note.visibility === 'FREE' && <Badge variant="secondary">free</Badge>}
       <span className="hidden shrink-0 text-xs tabular-nums text-muted-foreground md:inline">
         {note.viewCount} views · {formatBytes(note.fileSize)}
       </span>

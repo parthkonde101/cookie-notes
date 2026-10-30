@@ -1,10 +1,13 @@
 'use client';
 
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { ArrowRight } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { BuyButton } from '@/components/commerce/buy-button';
 import { useAuthModal } from '@/components/auth/auth-modal';
 import { useVerificationGate } from '@/components/auth/verification-gate';
-import { type CardAccessState } from '@/components/catalog/note-card';
+import { cardLabel, isPurchasable, type CardAccessState, type CardCommerce } from '@/components/catalog/note-card';
 import { BakingCookie, NotifyMeButton } from '@/components/catalog/baking';
 import { cn } from '@/lib/utils';
 
@@ -14,7 +17,7 @@ export interface UnitRowProps {
   name: string;
   description: string | null;
   /** The unit's PDF. `null` means nothing has been uploaded to this unit yet. */
-  note: { id: string; access: CardAccessState } | null;
+  note: { id: string; access: CardAccessState; commerce?: CardCommerce | null } | null;
   /** Needed only for the "Notify me" action while the unit is baking. */
   unitId: string;
   /** "Being Baked" — the notes are on the way. Never true alongside `note`. */
@@ -78,12 +81,17 @@ export function UnitRow({
   const { requestAuth } = useAuthModal();
   const { allowNoteOpen } = useVerificationGate();
 
+  const pathname = usePathname();
   const access: CardAccessState | null = note?.access ?? null;
-  const openable = access?.kind === 'open' || access?.kind === 'sign_in_required';
+  const commerce = note?.commerce ?? null;
+  // A paid note this viewer does not hold is bought, not opened; its action is the Buy button.
+  const purchasable = access ? isPurchasable(access, commerce) : false;
+  const label = access ? cardLabel(access, commerce) : null;
+  const openable = (access?.kind === 'open' || access?.kind === 'sign_in_required') && !purchasable;
   // A baking unit is not openable, but it is not greyed out either — it is
   // deliberately the most alive-looking of the two empty states.
   const baking = !note && beingBaked;
-  const inert = !openable && !baking;
+  const inert = !openable && !baking && !purchasable;
   const href = note ? `/notes/${note.id}` : '#';
   const title = unitTitle(name, index);
 
@@ -164,6 +172,14 @@ export function UnitRow({
               </span>
             )}
           </h3>
+          {label && (
+            <Badge
+              variant={label === 'Owned' ? 'success' : label === 'Paid' ? 'default' : 'secondary'}
+              className="mt-1.5"
+            >
+              {label}
+            </Badge>
+          )}
           {description && (
             <p className="mt-1 line-clamp-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
               {description}
@@ -198,6 +214,18 @@ export function UnitRow({
           <span className="rounded-full border border-dashed border-border px-3 py-1 text-xs text-muted-foreground">
             Not uploaded yet
           </span>
+        ) : purchasable && commerce && note ? (
+          <BuyButton
+            productType="NOTE"
+            productId={note.id}
+            returnTo={pathname || '/'}
+            priceMinor={commerce.priceMinor}
+            signedIn={access?.kind !== 'sign_in_required'}
+            openHref={href}
+            openLabel="Open the note"
+            size="sm"
+            className="relative z-10"
+          />
         ) : access?.kind === 'unavailable' ? (
           <span className="rounded-full border border-border px-3 py-1 text-xs text-muted-foreground">
             Unavailable

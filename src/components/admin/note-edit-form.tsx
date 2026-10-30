@@ -10,15 +10,12 @@ import { programLabel, stripProgramPrefix } from '@/lib/program';
 interface Props {
   noteId: string;
   catalog: CatalogSemester[];
-  currencySymbol: string;
   initial: {
     title: string;
     description: string;
     subjectId: string;
     unitId: string;
     status: string;
-    visibility: string;
-    price: number;
   };
 }
 
@@ -31,7 +28,7 @@ interface Props {
  * older model carry their own, but a note that lives in a unit is named after
  * that unit and normally needs no attention here.
  */
-export function NoteEditForm({ noteId, catalog, currencySymbol, initial }: Props) {
+export function NoteEditForm({ noteId, catalog, initial }: Props) {
   const [subjectId, setSubjectId] = useState(initial.subjectId);
   const [unitId, setUnitId] = useState(initial.unitId);
 
@@ -125,19 +122,6 @@ export function NoteEditForm({ noteId, catalog, currencySymbol, initial }: Props
             <option value="DRAFT">Draft — hidden from the catalogue</option>
             <option value="ARCHIVED">Archived</option>
           </Select>
-        </Field>
-        <Field label="Visibility" htmlFor="visibility">
-          <Select id="visibility" name="visibility" defaultValue={initial.visibility}>
-            <option value="RESTRICTED">Restricted — grant required</option>
-            <option value="FREE">Free for all students</option>
-          </Select>
-        </Field>
-        <Field
-          label={`Price (${currencySymbol})`}
-          htmlFor="price"
-          hint="0 hides the price. Nothing is charged yet."
-        >
-          <Input id="price" name="price" type="number" min={0} step={1} defaultValue={initial.price} />
         </Field>
       </div>
     </ActionForm>

@@ -344,13 +344,9 @@ export function NoteUploadForm({
             <option value="FREE">Free</option>
           </Select>
         </Field>
-        <Field
-          label={`Price (${currencySymbol})`}
-          htmlFor="price"
-          hint="0 hides the price. Nothing is charged yet."
-        >
-          <Input id="price" name="price" type="number" min={0} step={1} defaultValue={0} />
-        </Field>
+        <p className="self-end pb-2 text-xs text-muted-foreground">
+          To sell a note, open it after uploading and set its price under “Access and price”.
+        </p>
       </div>
 
       {/* Opt-in, and off every time the dialog opens — a mass email is never

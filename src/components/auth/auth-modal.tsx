@@ -52,6 +52,15 @@ export function useAuthModal(): AuthModalState {
   return context;
 }
 
+/**
+ * Like `useAuthModal`, but returns null outside the provider instead of throwing — for
+ * a component (the Buy button) that is also rendered where there is no sign-in modal, such
+ * as the admin preview, and must then fall back to a plain link to the sign-in page.
+ */
+export function useOptionalAuthModal(): AuthModalState | null {
+  return useContext(AuthModalContext);
+}
+
 type Mode = 'signin' | 'register';
 
 interface ConflictDetails {

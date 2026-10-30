@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { PageContainer, PageHeader } from '@/components/layout/page-header';
 import { ActionButton } from '@/components/admin/action-button';
 import { NoteEditForm } from '@/components/admin/note-edit-form';
+import { NoteAccessForm } from '@/components/admin/note-access-form';
 import { NoteReplaceForm } from '@/components/admin/note-replace-form';
 import { deleteNoteAction } from '@/app/admin/_actions/notes';
 import { revokeAccessAction } from '@/app/admin/_actions/access';
@@ -48,8 +49,13 @@ export default async function AdminNotePage({ params }: { params: Promise<{ id: 
   });
   if (!note) notFound();
 
-  const [catalog, viewStats, recentReaders] = await Promise.all([
+  const [catalog, sold, viewStats, recentReaders] = await Promise.all([
     loadCatalogTree(),
+    prisma.orderItem.aggregate({
+      where: { noteId: id, order: { status: { in: ['PAID', 'PARTIALLY_REFUNDED', 'REFUNDED'] } } },
+      _count: { _all: true },
+      _sum: { amountMinor: true },
+    }),
     prisma.noteView.aggregate({
       where: { noteId: id },
       _count: { _all: true },
@@ -125,16 +131,33 @@ export default async function AdminNotePage({ params }: { params: Promise<{ id: 
               <NoteEditForm
                 noteId={note.id}
                 catalog={catalog}
-                currencySymbol={env.catalog.currencySymbol}
                 initial={{
                   title: note.title,
                   description: note.description ?? '',
                   subjectId: note.subjectId,
                   unitId: note.unitId ?? '',
                   status: note.status,
-                  visibility: note.visibility,
-                  price: note.priceMinor / 100,
                 }}
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle>Access and price</CardTitle>
+              <CardDescription>
+                Whether this note is free, restricted, or for sale — and what it costs.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <NoteAccessForm
+                noteId={note.id}
+                initialMode={note.isPaid ? 'PAID' : note.visibility === 'FREE' ? 'FREE' : 'RESTRICTED'}
+                initialPriceMinor={note.isPaid ? note.priceMinor : 0}
+                status={note.status}
+                previewOn={env.catalog.openAccess}
+                paymentsReady={env.payments.enabled}
+                sales={{ orders: sold._count._all, grossMinor: sold._sum.amountMinor ?? 0 }}
               />
             </CardContent>
           </Card>

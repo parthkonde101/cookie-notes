@@ -27,6 +27,8 @@ export interface CatalogNote {
   title: string;
   description: string | null;
   priceMinor: number;
+  /** For sale. `priceMinor` is a real price only when this is true. */
+  isPaid: boolean;
   visibility: 'FREE' | 'RESTRICTED';
   pageCount: number | null;
   createdAt: Date;
@@ -204,6 +206,7 @@ export async function subjectCatalog(slug: string) {
     title: note.title,
     description: note.description,
     priceMinor: note.priceMinor,
+    isPaid: note.isPaid,
     visibility: note.visibility,
     pageCount: note.pageCount,
     createdAt: note.createdAt,
@@ -257,6 +260,7 @@ const noteSelect = {
   title: true,
   description: true,
   priceMinor: true,
+  isPaid: true,
   visibility: true,
   pageCount: true,
   createdAt: true,
@@ -268,6 +272,7 @@ interface RawNote {
   title: string;
   description: string | null;
   priceMinor: number;
+  isPaid: boolean;
   visibility: 'FREE' | 'RESTRICTED';
   pageCount: number | null;
   createdAt: Date;

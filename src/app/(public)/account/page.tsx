@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { KeyRound } from 'lucide-react';
+import { KeyRound, Receipt } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { requireUser } from '@/lib/auth/guards';
@@ -41,6 +41,12 @@ export default async function AccountPage() {
               <Link href="/forgot-password">
                 <KeyRound className="size-4" />
                 Change password
+              </Link>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <Link href="/account/purchases">
+                <Receipt className="size-4" />
+                My purchases
               </Link>
             </Button>
             {user.role === 'ADMIN' && (

@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
         name: true,
         subject: { select: { semester: { select: { program: true } } } },
         notes: {
-          select: { id: true, version: true, status: true, publishedAt: true, archivedAt: true },
+          select: { id: true, version: true, status: true, publishedAt: true, archivedAt: true, isPaid: true },
           take: 1,
         },
       },
@@ -92,7 +92,9 @@ export async function POST(request: NextRequest) {
     }
 
     const existing = unit.notes[0] ?? null;
-    const priceMinor = Math.round((meta.price ?? 0) * 100);
+    // Pricing is set from the note's own page, never by an upload: a new note starts at no
+    // price, and replacing the file of an existing one leaves how it is sold alone.
+    const priceMinor = 0;
 
     const uploaded = await ingestPdfUpload(form, { fallbackFileName: `${unit.name}.pdf` });
     const { storageKey, fileName, fileSize, checksum, pageCount } = uploaded;
@@ -124,8 +126,9 @@ export async function POST(request: NextRequest) {
             pageCount,
             version: nextVersion,
             status: meta.status,
-            visibility: meta.visibility,
-            priceMinor,
+            // A note that is for sale keeps its visibility and price: an upload form's
+            // defaults must never be able to turn a paid note free or zero its price.
+            ...(existing.isPaid ? {} : { visibility: meta.visibility }),
             // Timestamps mark transitions, so replacing the file of an
             // already-published note leaves its publication date alone.
             publishedAt:

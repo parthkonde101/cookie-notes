@@ -28,6 +28,8 @@ const DESTRUCTIVE: AuditAction[] = [
   'SUBJECT_DELETED',
   'UNIT_DELETED',
   'TOPIC_DELETED',
+  'BUNDLE_DELETED',
+  'REFUND_INITIATED',
 ];
 
 export default async function AuditPage({

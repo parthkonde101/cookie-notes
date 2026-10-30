@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth/guards';
 import { checkNoteAccess } from '@/lib/access/entitlements';
@@ -15,7 +15,15 @@ export default async function NotePage({ params }: { params: Promise<{ id: strin
   // Authorised server-side before anything is rendered. The viewer then goes
   // through the API, which repeats the check for every byte it serves.
   const decision = await checkNoteAccess(user.id, user.role, id);
-  if (!decision.allowed) notFound();
+  if (!decision.allowed) {
+    // A note for sale that this student has not bought: take them to where it is sold
+    // (the catalogue already shows it publicly) rather than to a dead end.
+    if (decision.reason === 'purchase_required') {
+      const forSale = await prisma.note.findUnique({ where: { id }, select: { subject: { select: { slug: true } } } });
+      if (forSale) redirect(`/subject/${forSale.subject.slug}`);
+    }
+    notFound();
+  }
 
   const note = await prisma.note.findUnique({
     where: { id },

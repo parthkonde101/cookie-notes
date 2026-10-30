@@ -130,7 +130,7 @@ export default async function AdminUserPage({ params }: { params: Promise<{ id: 
               confirm={{
                 title: 'Delete this account permanently?',
                 description:
-                  'Sessions, grants and reading history are removed. The audit log keeps a record of the deletion.',
+                  'Sessions, grants, purchased access and reading history are removed. Orders and payment records are kept (with the buyer\'s email and name at the time), because they are financial records. The audit log keeps a record of the deletion.',
                 confirmLabel: 'Delete permanently',
                 destructive: true,
               }}

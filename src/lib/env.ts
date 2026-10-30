@@ -74,6 +74,84 @@ export function readWatermarkSetting(raw: string | undefined): boolean {
   return !(value === 'false' || value === '0');
 }
 
+/**
+ * How the Razorpay settings are read. Pure, so the rules can be tested without a
+ * server: it never reads `process.env` itself.
+ *
+ *   keyId / keySecret / webhookSecret  all three must be present, or payments are OFF.
+ *                                      A half-configured gateway would take money it
+ *                                      could not reliably turn into access.
+ *   mode                               comes from the key id: `rzp_test_…` is test,
+ *                                      `rzp_live_…` is live. PAYMENT_MODE, when set,
+ *                                      must agree or payments are OFF.
+ *   live keys outside production       refused. A developer machine can never take a
+ *                                      real payment, whatever is in its environment.
+ *                                      Vercel Preview builds run with NODE_ENV=production,
+ *                                      so `deployment` (VERCEL_ENV) is checked too: when it
+ *                                      is set to anything but "production", live is refused.
+ *                                      Unset (self-hosted, local) changes nothing.
+ *   apiBase                            the official API, unless RAZORPAY_API_BASE names
+ *                                      a loopback address AND the key is a test key —
+ *                                      that is how the test suite points the real code
+ *                                      at a local mock gateway. Anything else is ignored.
+ */
+export function readPaymentsSetting(input: {
+  keyId?: string;
+  keySecret?: string;
+  webhookSecret?: string;
+  paymentMode?: string;
+  apiBase?: string;
+  isProduction: boolean;
+  deployment?: string;
+}): {
+  enabled: boolean;
+  mode: 'test' | 'live' | null;
+  apiBase: string;
+  problem: string | null;
+} {
+  const OFFICIAL = 'https://api.razorpay.com/v1';
+  const keyId = (input.keyId ?? '').trim();
+  const keySecret = (input.keySecret ?? '').trim();
+  const webhookSecret = (input.webhookSecret ?? '').trim();
+  const declared = (input.paymentMode ?? '').trim().toLowerCase();
+
+  const off = (problem: string | null) => ({ enabled: false, mode: null, apiBase: OFFICIAL, problem });
+
+  if (!keyId && !keySecret && !webhookSecret) return off(null);
+  if (!keyId || !keySecret || !webhookSecret) {
+    return off('Razorpay is only partly configured: RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET must all be set.');
+  }
+
+  const mode = keyId.startsWith('rzp_test_') ? 'test' : keyId.startsWith('rzp_live_') ? 'live' : null;
+  if (!mode) return off('RAZORPAY_KEY_ID must start with rzp_test_ or rzp_live_.');
+  if (declared && declared !== 'test' && declared !== 'live') {
+    return off('PAYMENT_MODE must be "test" or "live".');
+  }
+  if (declared && declared !== mode) {
+    return off(`PAYMENT_MODE is "${declared}" but the key is a ${mode} key.`);
+  }
+  const deployment = (input.deployment ?? '').trim().toLowerCase();
+  if (mode === 'live' && (!input.isProduction || (deployment && deployment !== 'production'))) {
+    return off('Live Razorpay keys are refused outside production (including Vercel Preview), so only the real site can take a real payment.');
+  }
+
+  let apiBase = OFFICIAL;
+  const override = (input.apiBase ?? '').trim();
+  if (override) {
+    try {
+      const url = new URL(override);
+      const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]';
+      if (loopback && url.protocol === 'http:' && mode === 'test') {
+        apiBase = override.replace(/\/+$/, '');
+      }
+    } catch {
+      // not a URL: ignored, the official API is used
+    }
+  }
+
+  return { enabled: true, mode, apiBase, problem: null };
+}
+
 export const env = {
   get isProduction() {
     return process.env.NODE_ENV === 'production';
@@ -161,6 +239,44 @@ export const env = {
      */
     get watermark(): boolean {
       return readWatermarkSetting(process.env.NOTE_WATERMARK_ENABLED);
+    },
+  },
+
+  /**
+   * Online payments (Razorpay). The secrets here are server-only: this module cannot
+   * be imported by a client component, and only the public key id is ever sent to the
+   * browser. See `readPaymentsSetting` for the rules.
+   */
+  payments: {
+    get keyId(): string {
+      return (process.env.RAZORPAY_KEY_ID ?? '').trim();
+    },
+    get keySecret(): string {
+      return (process.env.RAZORPAY_KEY_SECRET ?? '').trim();
+    },
+    get webhookSecret(): string {
+      return (process.env.RAZORPAY_WEBHOOK_SECRET ?? '').trim();
+    },
+    get setting() {
+      return readPaymentsSetting({
+        keyId: process.env.RAZORPAY_KEY_ID,
+        keySecret: process.env.RAZORPAY_KEY_SECRET,
+        webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET,
+        paymentMode: process.env.PAYMENT_MODE,
+        apiBase: process.env.RAZORPAY_API_BASE,
+        isProduction: process.env.NODE_ENV === 'production',
+        deployment: process.env.VERCEL_ENV,
+      });
+    },
+    /** Whether checkout is available at all. Off means paid notes simply cannot be bought yet. */
+    get enabled(): boolean {
+      return env.payments.setting.enabled;
+    },
+    get mode(): 'test' | 'live' | null {
+      return env.payments.setting.mode;
+    },
+    get apiBase(): string {
+      return env.payments.setting.apiBase;
     },
   },
 
@@ -310,6 +426,11 @@ export function productionConfigWarnings(): string[] {
   }
   if (auth && view && auth === view) {
     problems.push('AUTH_SECRET and VIEW_TOKEN_SECRET must be different values.');
+  }
+  const payments = env.payments.setting;
+  if (payments.problem) problems.push(payments.problem);
+  if (payments.enabled && payments.mode === 'test') {
+    problems.push('Razorpay is in TEST mode — no real payment can be taken until live keys are set.');
   }
   if (env.storage.driver === 's3') {
     // Names only — never the values. A missing one of these fails at upload

@@ -10,6 +10,7 @@ import { recordEvent } from '@/lib/analytics/events';
 import { writeAudit } from '@/lib/audit';
 import { firstError, noteMetadataSchema } from '@/lib/validation';
 import { subjectProgram } from '@/lib/admin/catalog';
+import { assertNoteDeletable } from '@/lib/commerce/admin';
 import { programLabel } from '@/lib/program';
 import type { ActionResult } from '@/app/admin/_actions/users';
 
@@ -44,8 +45,6 @@ export async function updateNoteAction(noteId: string, form: FormData): Promise<
       unitId: submittedUnitId,
       topicId,
       status: value(form, 'status') || 'PUBLISHED',
-      visibility: value(form, 'visibility') || 'RESTRICTED',
-      price: value(form, 'price') || '0',
     });
     if (!parsed.success) throw Errors.validation(firstError(parsed.error));
     const meta = parsed.data;
@@ -114,8 +113,9 @@ export async function updateNoteAction(noteId: string, form: FormData): Promise<
         unitId: meta.unitId || null,
         topicId: meta.topicId || null,
         status: meta.status,
-        visibility: meta.visibility,
-        priceMinor: Math.round((meta.price ?? 0) * 100),
+        // How the note is offered — free, restricted or for sale, and at what price — is
+        // set only by `setNoteAccessAction`. This form never touches it, so saving a typo fix
+        // can never change what a student pays or whether a note is free.
         publishedAt: becamePublished ? new Date() : existing.publishedAt,
         archivedAt: becameArchived ? new Date() : meta.status === 'ARCHIVED' ? existing.archivedAt : null,
       },
@@ -128,7 +128,7 @@ export async function updateNoteAction(noteId: string, form: FormData): Promise<
       targetType: 'note',
       targetId: noteId,
       targetLabel: meta.title,
-      metadata: { status: meta.status, visibility: meta.visibility },
+      metadata: { status: meta.status },
       ctx,
     });
     await recordEvent({ type: 'NOTE_UPDATED', userId: admin.id, noteId, ctx });
@@ -152,6 +152,8 @@ export async function deleteNoteAction(noteId: string): Promise<ActionResult> {
       include: { versions: { select: { storageKey: true } } },
     });
     if (!note) throw Errors.notFound('That note no longer exists.');
+
+    await assertNoteDeletable(noteId);
 
     await writeAudit({
       action: 'NOTE_DELETED',

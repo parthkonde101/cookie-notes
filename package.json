@@ -27,7 +27,8 @@
     "verify:current-email": "tsx scripts/verify-current-email.ts",
     "verify:no-verification": "tsx scripts/verify-no-verification.ts",
     "verify:study-charts": "tsx scripts/verify-study-charts.ts",
-    "verify:watermark": "tsx scripts/verify-watermark.ts"
+    "verify:watermark": "tsx scripts/verify-watermark.ts",
+    "verify:commerce": "tsx scripts/verify-commerce.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1121.0",

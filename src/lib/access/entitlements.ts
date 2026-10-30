@@ -13,9 +13,18 @@ import type { Prisma } from '@/generated/prisma/client';
  *   2. A note that is not PUBLISHED is invisible to students, full stop.
  *   3. A PUBLISHED note with visibility FREE is readable by any active student.
  *   4. Otherwise the student needs a non-expired entitlement covering the note,
- *      its unit, its subject, its semester, or the whole catalogue.
+ *      its unit, its subject, its semester, or the whole catalogue — or a live
+ *      PURCHASE grant for the note itself (see `purchase_grants`).
  *   5. Finally, while OPEN_ACCESS_MODE is on, any *signed-in* active student may
- *      read any published note. See `openAccessGrantsNote` below.
+ *      read any published note — EXCEPT a note that is for sale (`isPaid`), which
+ *      is only ever reachable through rule 4. See `openAccessGrantsNote` below.
+ *
+ * Two sources of access, one function. Admin, promotional and sign-up grants are
+ * `entitlements` rows and keep their provenance in `entitlements.source`;
+ * purchase-derived access is a `purchase_grants` row tied to its order item. They
+ * are deliberately separate tables: a purchase never writes to (so can never
+ * overwrite) an entitlement, and a refund revokes only purchase grants, so an admin
+ * grant to the same student survives it and vice versa.
  *
  * The catalogue itself is public and identical for everyone — browsing is not
  * gated. These checks decide what happens when someone tries to *open* a note,
@@ -117,7 +126,9 @@ export async function entitledNoteFilter(userId: string): Promise<Prisma.NoteWhe
   const subjectIds = keys.filter((k) => k.startsWith('SUBJECT:')).map((k) => k.slice(8));
   const semesterIds = keys.filter((k) => k.startsWith('SEMESTER:')).map((k) => k.slice(9));
 
-  const or: Prisma.NoteWhereInput[] = [{ visibility: 'FREE' }];
+  const or: Prisma.NoteWhereInput[] = [{ visibility: 'FREE', isPaid: false }];
+  // Notes bought by this student (and not since refunded).
+  or.push({ purchaseGrants: { some: { userId, revokedAt: null } } });
   if (noteIds.length) or.push({ id: { in: noteIds } });
   if (unitIds.length) or.push({ unitId: { in: unitIds } });
   if (subjectIds.length) or.push({ subjectId: { in: subjectIds } });
@@ -134,14 +145,23 @@ export type AccessReason =
   | 'admin'
   | 'free'
   | 'entitlement'
+  | 'purchase'
   | 'open_access'
   | 'not_found'
   | 'not_published'
-  | 'no_entitlement';
+  | 'no_entitlement'
+  | 'purchase_required';
 
 export type AccessDecision =
-  | { allowed: true; reason: Extract<AccessReason, 'admin' | 'free' | 'entitlement' | 'open_access'>; via?: string }
-  | { allowed: false; reason: Extract<AccessReason, 'not_found' | 'not_published' | 'no_entitlement'> };
+  | {
+      allowed: true;
+      reason: Extract<AccessReason, 'admin' | 'free' | 'entitlement' | 'purchase' | 'open_access'>;
+      via?: string;
+    }
+  | {
+      allowed: false;
+      reason: Extract<AccessReason, 'not_found' | 'not_published' | 'no_entitlement' | 'purchase_required'>;
+    };
 
 /**
  * Preview mode.
@@ -174,6 +194,7 @@ export async function checkNoteAccess(
       id: true,
       status: true,
       visibility: true,
+      isPaid: true,
       unitId: true,
       subjectId: true,
       subject: { select: { semesterId: true } },
@@ -183,7 +204,9 @@ export async function checkNoteAccess(
   if (!note) return { allowed: false, reason: 'not_found' };
   if (role === 'ADMIN') return { allowed: true, reason: 'admin' };
   if (note.status !== 'PUBLISHED') return { allowed: false, reason: 'not_published' };
-  if (note.visibility === 'FREE') return { allowed: true, reason: 'free' };
+  // A note for sale is never "free", whatever its visibility column says. The
+  // database already forbids the combination; this makes the rule independent of it.
+  if (note.visibility === 'FREE' && !note.isPaid) return { allowed: true, reason: 'free' };
 
   const candidates = candidateKeys({
     noteId: note.id,
@@ -203,9 +226,19 @@ export async function checkNoteAccess(
   });
 
   if (match) return { allowed: true, reason: 'entitlement', via: match.targetKey };
-  if (openAccessGrantsNote()) return { allowed: true, reason: 'open_access' };
 
-  return { allowed: false, reason: 'no_entitlement' };
+  // Purchase-derived access: a live (not revoked) grant for exactly this note.
+  const purchased = await prisma.purchaseGrant.findFirst({
+    where: { userId, noteId: note.id, revokedAt: null },
+    select: { id: true },
+  });
+  if (purchased) return { allowed: true, reason: 'purchase', via: `PURCHASE:${purchased.id}` };
+
+  // A note for sale is outside the open-preview fallback: the point of selling it is
+  // that the only ways in are a grant or a purchase.
+  if (!note.isPaid && openAccessGrantsNote()) return { allowed: true, reason: 'open_access' };
+
+  return { allowed: false, reason: note.isPaid ? 'purchase_required' : 'no_entitlement' };
 }
 
 /** Throws the right HTTP error instead of returning a decision. */
@@ -284,7 +317,7 @@ export async function assertPyqAccess(
   throw Errors.notFound('This paper is not available on your account.');
 }
 
-function candidateKeys(location: {
+export function candidateKeys(location: {
   noteId: string;
   unitId: string | null;
   subjectId: string;
@@ -297,6 +330,39 @@ function candidateKeys(location: {
     targetKeyFor('SEMESTER', location.semesterId),
     targetKeyFor('ALL', null),
   ].filter((value): value is string => value !== null);
+}
+
+
+/**
+ * Which of these notes the student OWNS — has real, revocable access to through an
+ * entitlement of any scope or a live purchase. Free notes, open-preview access and
+ * the admin role are deliberately not "ownership": this answers "would buying this
+ * give you anything you do not already hold?" and "is this one of yours?".
+ */
+export async function ownedNoteIds(
+  userId: string,
+  notes: { id: string; unitId: string | null; subjectId: string; semesterId: string }[],
+): Promise<Set<string>> {
+  const owned = new Set<string>();
+  if (notes.length === 0) return owned;
+
+  const keys = new Set(await activeTargetKeys(userId));
+  for (const note of notes) {
+    const covered = candidateKeys({
+      noteId: note.id,
+      unitId: note.unitId,
+      subjectId: note.subjectId,
+      semesterId: note.semesterId,
+    }).some((key) => keys.has(key));
+    if (covered) owned.add(note.id);
+  }
+
+  const grants = await prisma.purchaseGrant.findMany({
+    where: { userId, revokedAt: null, noteId: { in: notes.map((note) => note.id) } },
+    select: { noteId: true },
+  });
+  for (const grant of grants) owned.add(grant.noteId);
+  return owned;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,13 +383,18 @@ export type NoteAccessState =
    * Readable right now. `via` records *why* for analytics and admin tooling;
    * the student-facing card deliberately does not surface it.
    */
-  | { kind: 'open'; via: 'admin' | 'free' | 'entitlement' | 'preview' }
+  | { kind: 'open'; via: 'admin' | 'free' | 'entitlement' | 'purchase' | 'preview' }
+  /** Signed in, the note is for sale, and this account does not have it. */
+  | { kind: 'purchase_required'; priceMinor: number }
   /** Signed in, but this note is not on their account and preview mode is off. */
   | { kind: 'unavailable' };
 
 export interface NoteLocationInput {
   id: string;
   visibility: 'FREE' | 'RESTRICTED';
+  /** For sale. Optional so callers that predate paid notes keep working (false). */
+  isPaid?: boolean;
+  priceMinor?: number;
   unitId: string | null;
   subjectId: string;
   semesterId: string;
@@ -355,9 +426,17 @@ export async function resolveNoteAccessStates(
 
   const keys = new Set(await activeTargetKeys(viewer.id));
   const preview = openAccessGrantsNote();
+  const purchased = new Set(
+    (
+      await prisma.purchaseGrant.findMany({
+        where: { userId: viewer.id, revokedAt: null, noteId: { in: notes.map((note) => note.id) } },
+        select: { noteId: true },
+      })
+    ).map((row) => row.noteId),
+  );
 
   for (const note of notes) {
-    if (note.visibility === 'FREE') {
+    if (note.visibility === 'FREE' && !note.isPaid) {
       states.set(note.id, { kind: 'open', via: 'free' });
       continue;
     }
@@ -371,6 +450,11 @@ export async function resolveNoteAccessStates(
 
     if (entitled) {
       states.set(note.id, { kind: 'open', via: 'entitlement' });
+    } else if (purchased.has(note.id)) {
+      states.set(note.id, { kind: 'open', via: 'purchase' });
+    } else if (note.isPaid) {
+      // For sale and not owned: the open-preview fallback never applies.
+      states.set(note.id, { kind: 'purchase_required', priceMinor: note.priceMinor ?? 0 });
     } else if (preview) {
       states.set(note.id, { kind: 'open', via: 'preview' });
     } else {

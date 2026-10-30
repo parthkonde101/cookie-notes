@@ -29,6 +29,8 @@ export interface CatalogNote {
   title: string;
   status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
   visibility: 'FREE' | 'RESTRICTED';
+  /** For sale. A price only means something when this is true. */
+  isPaid: boolean;
   priceMinor: number;
   viewCount: number;
   fileSize: number;
@@ -202,6 +204,7 @@ const noteSelect = {
   title: true,
   status: true,
   visibility: true,
+  isPaid: true,
   priceMinor: true,
   viewCount: true,
   fileSize: true,
@@ -215,6 +218,7 @@ function shapeNote(note: CatalogNote): CatalogNote {
     title: note.title,
     status: note.status,
     visibility: note.visibility,
+    isPaid: note.isPaid,
     priceMinor: note.priceMinor,
     viewCount: note.viewCount,
     fileSize: note.fileSize,

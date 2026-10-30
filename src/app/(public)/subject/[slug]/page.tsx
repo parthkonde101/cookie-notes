@@ -12,6 +12,8 @@ import { subjectCatalog, subscribedUnitIds, type CatalogNote } from '@/lib/catal
 import { PROGRAM_PARAM, programLabel, stripProgramPrefix } from '@/lib/program';
 import { optionalUser } from '@/lib/auth/guards';
 import { resolveNoteAccessStates } from '@/lib/access/entitlements';
+import { bundlesForSubject } from '@/lib/commerce/bundles';
+import { BundleCard } from '@/components/commerce/bundle-card';
 import { recordEvent } from '@/lib/analytics/events';
 import { requestContext } from '@/lib/request';
 
@@ -70,11 +72,16 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
     allNotes.map((note) => ({
       id: note.id,
       visibility: note.visibility,
+      isPaid: note.isPaid,
+      priceMinor: note.priceMinor,
       unitId: note.unitId,
       subjectId: note.subjectId,
       semesterId: note.semesterId,
     })),
   );
+
+  // Bundles promoted on this subject — active, purchasable, and shown once each.
+  const bundles = await bundlesForSubject(subject.id, auth?.user.id ?? null);
 
   await recordEvent({
     type: 'SUBJECT_OPENED',
@@ -93,6 +100,7 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
       context={note.unitName}
       pageCount={note.pageCount}
       access={(states.get(note.id) ?? { kind: 'sign_in_required' }) as CardAccessState}
+      commerce={{ isPaid: note.isPaid, priceMinor: note.priceMinor }}
     />
   );
 
@@ -177,6 +185,42 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
         />
       ) : (
         <div className="mt-8 space-y-12">
+          {/*
+           * Bundles come first and look like products, so they are the first thing a
+           * student sees — but they are one section among the rest, and the notes remain
+           * directly below. No section is drawn when there are none to promote.
+           */}
+          {bundles.length > 0 && (
+            <section aria-label="Bundles">
+              <SectionHeading
+                aside={
+                  <span className="text-xs text-muted-foreground">
+                    {bundles.length} {bundles.length === 1 ? 'bundle' : 'bundles'}
+                  </span>
+                }
+              >
+                Bundles
+              </SectionHeading>
+              <div className="mt-4 space-y-3">
+                {bundles.map((bundle) => (
+                  <BundleCard
+                    key={bundle.id}
+                    id={bundle.id}
+                    title={bundle.title}
+                    description={bundle.description}
+                    priceMinor={bundle.priceMinor}
+                    featured={bundle.isFeatured}
+                    cover={bundle.cover}
+                    notes={bundle.notes}
+                    savings={bundle.savings}
+                    signedIn={Boolean(auth)}
+                    returnTo={`/subject/${subject.slug}`}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
           {/* Loose notes, if any, come before the units. */}
           {subject.looseNotes.length > 0 && (
             <section>
@@ -218,6 +262,7 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
                             access: (states.get(unit.note.id) ?? {
                               kind: 'sign_in_required',
                             }) as CardAccessState,
+                            commerce: { isPaid: unit.note.isPaid, priceMinor: unit.note.priceMinor },
                           }
                         : null
                     }

@@ -2,15 +2,43 @@
 
 import { useRouter } from 'next/navigation';
 import { ArrowRight, FileText } from 'lucide-react';
+import { usePathname } from 'next/navigation';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { BuyButton } from '@/components/commerce/buy-button';
 import { useAuthModal } from '@/components/auth/auth-modal';
 import { useVerificationGate } from '@/components/auth/verification-gate';
 import { cn } from '@/lib/utils';
 
 export type CardAccessState =
   | { kind: 'sign_in_required' }
-  | { kind: 'open'; via: 'admin' | 'free' | 'entitlement' | 'preview' }
+  | { kind: 'open'; via: 'admin' | 'free' | 'entitlement' | 'purchase' | 'preview' }
+  | { kind: 'purchase_required'; priceMinor: number }
   | { kind: 'unavailable' };
+
+/** What the catalogue knows about how a note is sold; display only — the server decides access. */
+export interface CardCommerce {
+  isPaid: boolean;
+  priceMinor: number;
+}
+
+/**
+ * The small label a card carries: Free, Paid or Owned — or nothing, for a note that is
+ * simply available. Computed from the same facts as the action, so the two cannot disagree.
+ */
+export function cardLabel(access: CardAccessState, commerce: CardCommerce | null | undefined): 'Free' | 'Paid' | 'Owned' | null {
+  if (access.kind === 'open' && access.via === 'free') return 'Free';
+  if (commerce?.isPaid) {
+    if (access.kind === 'open' && access.via !== 'admin') return 'Owned';
+    if (access.kind === 'purchase_required' || access.kind === 'sign_in_required') return 'Paid';
+  }
+  return null;
+}
+
+/** A paid note this viewer does not hold: the action is "Buy", not "Open". */
+export function isPurchasable(access: CardAccessState, commerce: CardCommerce | null | undefined): boolean {
+  return Boolean(commerce?.isPaid) && (access.kind === 'purchase_required' || access.kind === 'sign_in_required');
+}
 
 export interface NoteCardProps {
   id: string;
@@ -19,6 +47,7 @@ export interface NoteCardProps {
   context: string | null;
   pageCount: number | null;
   access: CardAccessState;
+  commerce?: CardCommerce | null;
 }
 
 /**
@@ -32,13 +61,16 @@ export interface NoteCardProps {
  * Access itself is not decided here. `access` is a display hint computed on the
  * server, and opening a note still runs the full authorisation chain.
  */
-export function NoteCard({ id, title, description, context, pageCount, access }: NoteCardProps) {
+export function NoteCard({ id, title, description, context, pageCount, access, commerce }: NoteCardProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const { requestAuth } = useAuthModal();
   const { allowNoteOpen } = useVerificationGate();
 
   const href = `/notes/${id}`;
   const unavailable = access.kind === 'unavailable';
+  const purchasable = isPurchasable(access, commerce);
+  const label = cardLabel(access, commerce);
 
   function activate() {
     if (access.kind === 'open') {
@@ -76,7 +108,7 @@ export function NoteCard({ id, title, description, context, pageCount, access }:
 
         <div className="min-w-0 flex-1">
           <h3 className="text-pretty text-[0.95rem] font-medium leading-snug">
-            {unavailable ? (
+            {unavailable || purchasable ? (
               <span className="text-left">{title}</span>
             ) : (
               <button
@@ -89,6 +121,14 @@ export function NoteCard({ id, title, description, context, pageCount, access }:
             )}
           </h3>
           {context && <p className="mt-1 truncate text-xs text-muted-foreground">{context}</p>}
+          {label && (
+            <Badge
+              variant={label === 'Owned' ? 'success' : label === 'Paid' ? 'default' : 'secondary'}
+              className="mt-1.5"
+            >
+              {label}
+            </Badge>
+          )}
         </div>
       </div>
 
@@ -107,6 +147,18 @@ export function NoteCard({ id, title, description, context, pageCount, access }:
           <span className="shrink-0 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground">
             Unavailable
           </span>
+        ) : purchasable && commerce ? (
+          <BuyButton
+            productType="NOTE"
+            productId={id}
+            returnTo={pathname || '/'}
+            priceMinor={commerce.priceMinor}
+            signedIn={access.kind !== 'sign_in_required'}
+            openHref={href}
+            openLabel="Open the note"
+            size="sm"
+            className="relative z-10 shrink-0"
+          />
         ) : (
           <Button
             size="sm"
