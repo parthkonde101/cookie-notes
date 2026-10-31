@@ -1002,6 +1002,11 @@ async function main() {
     check('5 Jan: only the 23:59:59 sale', jan5.grossMinor === 10_000 && jan5.orders === 1 && jan5.refundsMinor === 0 && jan5.netMinor === 10_000);
     const week = await reporting.salesReport(day('2031-01-05', '2031-01-07'));
     check('5–7 Jan: gross 65,000; both processed refunds (15,000); net 50,000', week.grossMinor === 65_000 && week.orders === 4 && week.refundsMinor === 15_000 && week.refundCount === 2 && week.netMinor === 50_000);
+    const totalsJan6 = await reporting.salesTotals(day('2031-01-06'));
+    const totalsWeek = await reporting.salesTotals(day('2031-01-05', '2031-01-07'));
+    const totalsAll = await reporting.salesTotals();
+    check('the overview totals use the Sales page definitions: 6 Jan and 5–7 Jan match the full report, figure for figure', totalsJan6.grossMinor === jan6.grossMinor && totalsJan6.orders === jan6.orders && totalsJan6.refundsMinor === jan6.refundsMinor && totalsJan6.refundCount === jan6.refundCount && totalsJan6.netMinor === jan6.netMinor && totalsWeek.grossMinor === week.grossMinor && totalsWeek.netMinor === week.netMinor && totalsWeek.refundCount === week.refundCount);
+    check('all-time totals include the whole period, net = gross − refunds, and an empty period is zeros', totalsAll.grossMinor >= totalsWeek.grossMinor && totalsAll.orders >= totalsWeek.orders && totalsAll.refundsMinor >= totalsWeek.refundsMinor && totalsAll.netMinor === totalsAll.grossMinor - totalsAll.refundsMinor && (await reporting.salesTotals(day('2031-02-01'))).netMinor === 0);
     const empty = await reporting.salesReport(day('2031-02-01'));
     check('an empty period is all zeros — never NaN, never an error', empty.grossMinor === 0 && empty.orders === 0 && empty.averageOrderMinor === 0 && empty.netMinor === 0 && empty.topNotes.length === 0);
 
@@ -1054,6 +1059,12 @@ async function main() {
     const reported = await prisma.order.findFirstOrThrow({ where: { status: 'PARTIALLY_REFUNDED', amountMinor: 20_000, createdAt: new Date('2031-01-06T09:00:00Z') } });
     const orderPage = await adminClient.request(`/admin/sales/orders/${reported.id}`);
     check('an order page shows the customer, the product and the access it gave', orderPage.status === 200 && (await orderPage.text()).includes('What was bought'));
+    const allTime = await (await import('../src/lib/commerce/reporting')).salesTotals();
+    const overview = visible(await html(adminClient, '/admin'));
+    check('the admin overview shows total sales (net of refunds), this month, paid orders and refunds, with the real figures', overview.includes('Total sales') && overview.includes('This month') && overview.includes('Paid orders') && overview.includes(money.formatInr(allTime.netMinor)) && overview.includes(money.formatInr(allTime.refundsMinor)));
+    check('students cannot see the overview (and so cannot see sales totals)', (await status(studentClient, '/admin')) === 307 && (await status(anon, '/admin')) === 307);
+    const logo = await anon.request('/checkout-logo.png');
+    check('the checkout logo is public (Razorpay loads it from the student\'s browser) and is a real PNG', logo.status === 200 && (logo.headers.get('content-type') ?? '').includes('image/png') && (await logo.arrayBuffer()).byteLength > 1000);
     check('the sidebar links Bundles and Sales', (await html(adminClient, '/admin')).includes('/admin/sales') && (await html(adminClient, '/admin')).includes('/admin/bundles'));
 
     // my purchases: own orders only

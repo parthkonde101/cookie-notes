@@ -51,6 +51,49 @@ export interface SalesReport {
   flaggedPayments: number;
 }
 
+export interface SalesTotals {
+  grossMinor: number;
+  orders: number;
+  refundsMinor: number;
+  refundCount: number;
+  netMinor: number;
+}
+
+/**
+ * Just the money lines, for places that only need a headline (the admin overview). Defined
+ * exactly as in `salesReport` — paid-in-period gross, processed-in-period refunds, net — but
+ * three aggregates instead of the whole dashboard. With no `range` it is all time.
+ */
+export async function salesTotals(range?: Pick<SalesRange, 'start' | 'end'>): Promise<SalesTotals> {
+  const [gross, refunds] = await Promise.all([
+    prisma.order.aggregate({
+      where: {
+        status: { in: [...SALE_STATUSES] },
+        paidAt: range ? { gte: range.start, lt: range.end } : { not: null },
+      },
+      _sum: { amountMinor: true },
+      _count: { _all: true },
+    }),
+    prisma.refund.aggregate({
+      where: {
+        status: 'PROCESSED',
+        processedAt: range ? { gte: range.start, lt: range.end } : { not: null },
+      },
+      _sum: { amountMinor: true },
+      _count: { _all: true },
+    }),
+  ]);
+  const grossMinor = gross._sum.amountMinor ?? 0;
+  const refundsMinor = refunds._sum.amountMinor ?? 0;
+  return {
+    grossMinor,
+    orders: gross._count._all,
+    refundsMinor,
+    refundCount: refunds._count._all,
+    netMinor: grossMinor - refundsMinor,
+  };
+}
+
 export async function salesReport(range: SalesRange): Promise<SalesReport> {
   const paid: Prisma.OrderWhereInput = {
     status: { in: [...SALE_STATUSES] },

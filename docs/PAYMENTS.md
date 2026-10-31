@@ -84,6 +84,23 @@ priced). Existing notes default to not-for-sale, so the public catalogue is unch
 Things this step must confirm, because the mock cannot: the exact JSON fields Razorpay returns for
 payments/refunds/webhooks match what `src/lib/commerce/razorpay.ts` and `webhook.ts` read.
 
+### Payment methods (UPI)
+
+Razorpay decides which methods Checkout can show: only those enabled on the Razorpay account
+(Test Mode and Live Mode are configured separately). The app does not restrict methods; it asks
+Checkout to list **UPI first** (`config.display` in `src/components/commerce/buy-button.tsx`) and
+leaves every other enabled method below it. If UPI is not enabled on the account it will not
+appear whatever the code says, so enable it in the Razorpay Dashboard first.
+
+The logo in the Checkout window is `public/checkout-logo.png` (512×512, rendered from
+`public/favicon.svg`); Checkout loads it from `<site origin>/checkout-logo.png`, so it must stay
+publicly reachable. On a Preview with Deployment Protection on, that address redirects to a
+Vercel sign-in, so the logo may appear as the default letter there but shows on the real site.
+
+In Test Mode, UPI is simulated with test UPI IDs (`success@razorpay`, `failure@razorpay`);
+UPI Intent (the phone's installed UPI apps) and QR are Live Mode features, so test the phone
+experience with a low-value real payment once live.
+
 ### Testing on a Vercel Preview
 
 Use a branch-scoped set of Preview variables so nothing is shared with Production (Vercel

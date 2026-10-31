@@ -249,10 +249,23 @@ export function BuyButton({
         amount: order.amountMinor,
         currency: order.currency,
         name: 'Cookie Notes',
+        // Shown where Razorpay would otherwise draw a letter. It must be a public https
+        // address, so it is built from the page's own origin (public/checkout-logo.png).
+        image: `${window.location.origin}/checkout-logo.png`,
         description: order.title,
         order_id: order.gatewayOrderId,
         prefill: order.prefill,
         theme: accent ? { color: `hsl(${accent})` } : undefined,
+        // Students pay from their phones, so UPI goes first (on a phone, Razorpay lists the UPI
+        // apps installed there). Every other method the account has enabled stays below it:
+        // this only orders what Razorpay offers, it cannot add a method the account lacks.
+        config: {
+          display: {
+            blocks: { upi: { name: 'Pay with UPI', instruments: [{ method: 'upi' }] } },
+            sequence: ['block.upi'],
+            preferences: { show_default_blocks: true },
+          },
+        },
         handler: (response: RazorpaySuccess) => void confirm(order, response),
         modal: {
           // Closing the window is not a failure and not a success. If nothing was paid the
