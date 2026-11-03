@@ -27,12 +27,10 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   themeColor: '#0f0d0a',
   width: 'device-width',
-  // The page is laid out for the device width and stays at that scale: no zoom
-  // in when a field is focused, and no zoom out to fit something that overflows.
+  // Laid out for the device width. Pinch-zoom is left to the person: text-entry controls are
+  // already 16px on touch screens (see globals.css), which is what stops a phone zooming in
+  // when a field is focused, so there is no need to lock the scale.
   initialScale: 1,
-  minimumScale: 1,
-  maximumScale: 1,
-  userScalable: false,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

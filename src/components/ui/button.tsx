@@ -22,10 +22,12 @@ const buttonVariants = cva(
         link: 'text-primary underline-offset-4 hover:underline',
       },
       size: {
-        default: 'h-9 px-4 py-2',
-        sm: 'h-8 rounded-md px-3 text-xs',
+        // On a touch screen every size is at least 44px tall (a finger target). `icon-sm` stays
+        // compact on purpose: it is the dense reader toolbar, which has no width to spare.
+        default: 'h-9 px-4 py-2 coarse:h-11',
+        sm: 'h-8 rounded-md px-3 text-xs coarse:h-11',
         lg: 'h-11 rounded-md px-6 text-[0.95rem]',
-        icon: 'h-9 w-9',
+        icon: 'h-9 w-9 coarse:size-11',
         'icon-sm': 'h-8 w-8',
       },
     },

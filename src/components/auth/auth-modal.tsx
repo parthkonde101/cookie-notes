@@ -215,7 +215,7 @@ export function AuthModalProvider({
                       setError(null);
                     }}
                     className={cn(
-                      'rounded px-3 py-1.5 text-sm font-medium transition-colors',
+                      'rounded px-3 py-1.5 text-sm font-medium transition-colors coarse:py-3',
                       mode === value
                         ? 'bg-primary text-primary-foreground'
                         : 'text-muted-foreground hover:text-foreground',
@@ -280,7 +280,7 @@ export function AuthModalProvider({
 
                   <label
                     htmlFor="auth-remember"
-                    className="flex cursor-pointer items-center gap-2.5 text-sm text-foreground/90"
+                    className="flex cursor-pointer items-center gap-2.5 text-sm text-foreground/90 coarse:min-h-11"
                   >
                     <input
                       id="auth-remember"
@@ -300,7 +300,7 @@ export function AuthModalProvider({
                   <p className="text-center text-xs text-muted-foreground">
                     <Link
                       href="/forgot-password"
-                      className="underline-offset-4 hover:text-foreground hover:underline"
+                      className="inline-flex items-center underline-offset-4 hover:text-foreground hover:underline coarse:min-h-11"
                     >
                       Forgot your password?
                     </Link>

@@ -409,7 +409,10 @@ export function NoteViewer({
     const target = containerRef.current?.querySelector<HTMLElement>(
       `[data-page-wrapper="${pageNumber}"]`,
     );
-    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    target?.scrollIntoView({
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      block: 'start',
+    });
   }, []);
 
   const pages = useMemo(

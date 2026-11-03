@@ -167,7 +167,7 @@ export function AdminShell({
           />
           <aside className="absolute inset-y-0 left-0 w-64 border-r border-border bg-card shadow-xl animate-fade-in">
             <button
-              className="absolute right-3 top-4 rounded-md p-1 text-muted-foreground hover:text-foreground"
+              className="absolute right-3 top-4 rounded-md p-1 text-muted-foreground hover:text-foreground coarse:right-2 coarse:top-2 coarse:p-3.5"
               onClick={() => setOpen(false)}
               aria-label="Close navigation"
             >
@@ -181,7 +181,7 @@ export function AdminShell({
       <div className="flex min-w-0 flex-1 flex-col lg:pl-60">
         <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/85 px-4 backdrop-blur lg:hidden">
           <button
-            className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground active:bg-secondary coarse:p-3"
             onClick={() => setOpen(true)}
             aria-label="Open navigation"
           >

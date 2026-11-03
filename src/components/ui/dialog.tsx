@@ -37,14 +37,17 @@ const DialogContent = React.forwardRef<
         'fixed left-1/2 top-1/2 z-50 grid w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4',
         'rounded-lg border border-border bg-card p-6 shadow-xl duration-150',
         'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
+        // Asked for less motion: the same fade, without the zoom.
+        'motion-reduce:data-[state=closed]:zoom-out-100 motion-reduce:data-[state=open]:zoom-in-100',
         'max-h-[calc(100dvh-2rem)] overflow-y-auto',
         className,
       )}
       {...props}
     >
       {children}
+      {/* The icon is 16px; the ::after widens the tappable area to 44px without moving it. */}
       {!hideClose && (
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm text-muted-foreground opacity-70 transition-opacity hover:opacity-100">
+        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm text-muted-foreground opacity-70 transition-opacity after:absolute after:-inset-3.5 after:content-[''] hover:opacity-100 active:opacity-100">
           <X className="size-4" />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>

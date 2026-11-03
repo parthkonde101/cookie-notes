@@ -173,6 +173,19 @@
     background-color: hsl(var(--primary) / 0.45);
     background-clip: content-box;
   }
+
+  /*
+   * Touch-down feedback. On a phone there is no hover, so without this a tapped link or button
+   * shows nothing until the page changes. Whatever is pressed dims straight away.
+   */
+  @media (hover: none) {
+    a:active,
+    button:active:not(:disabled),
+    [role='menuitem']:active,
+    [role='tab']:active {
+      opacity: 0.75;
+    }
+  }
 }
 
 @layer components {
@@ -184,8 +197,16 @@
   .surface-interactive {
     @apply rounded-lg border border-border bg-card transition-[border-color,background-color,transform] duration-150;
   }
-  .surface-interactive:hover {
-    @apply border-primary/45 bg-card/80;
+  /* Hover only where there is a real hover (a mouse): on a phone it would stick after a tap. */
+  @media (hover: hover) {
+    .surface-interactive:hover {
+      @apply border-primary/45 bg-card/80;
+    }
+  }
+  /* The press answers instantly, on touch-down, and eases back on release. */
+  .surface-interactive:active {
+    transform: scale(0.985);
+    transition-duration: 60ms;
   }
 
   .stat-value {
@@ -337,4 +358,68 @@
   textarea {
     font-size: 16px !important;
   }
+}
+
+/*
+ * Accessibility preferences. Each one asks for something different and is answered on its own.
+ */
+
+@keyframes fade-only {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Less motion: nothing slides, scrolls smoothly, shimmers or pulses. Content still arrives
+   with a plain fade, so a change on screen is still noticeable. Spinners stay: they say
+   "working", which is information. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .skeleton::after,
+  .animate-ping {
+    animation: none;
+  }
+  .animate-fade-in {
+    animation-name: fade-only;
+  }
+  .surface-interactive:active {
+    transform: none;
+  }
+}
+
+/* Less transparency, or more contrast: translucent bars and panels become solid. The reader's
+   "window not in focus" cover goes solid too, which hides the page completely. The dialog
+   backdrop is a dim, not a surface, so it only loses its blur. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  [class*='backdrop-blur'] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  [class*='backdrop-blur']:not([data-state]) {
+    background-color: hsl(var(--background)) !important;
+  }
+}
+
+/* More contrast: a firmer edge on every border and input, and brighter secondary text. */
+@media (prefers-contrast: more) {
+  .dark {
+    --border: 28 12% 38%;
+    --input: 28 12% 42%;
+    --muted-foreground: 30 10% 82%;
+  }
+}
+
+/*
+ * Dialogs lock the page's scroll, and Radix pads the page by the scrollbar's width while it
+ * is locked, on the assumption that the scrollbar disappears. Here it does not (the root has
+ * its own overflow rule), so that padding narrowed the whole page by the scrollbar's width
+ * every time a dialog opened, and the header and background shifted sideways. No padding.
+ */
+html body[data-scroll-locked] {
+  margin-right: 0 !important;
 }

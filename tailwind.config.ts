@@ -1,4 +1,5 @@
 import type { Config } from 'tailwindcss';
+import plugin from 'tailwindcss/plugin';
 // Static ESM import rather than `require`. This file is TypeScript and is
 // evaluated as an ES module, where `require` is not defined. The package is
 // CommonJS (`export = plugin`), so `esModuleInterop` in tsconfig gives the
@@ -124,7 +125,14 @@ const config: Config = {
       },
     },
   },
-  plugins: [tailwindcssAnimate],
+  plugins: [
+    tailwindcssAnimate,
+    // `coarse:` applies only where the main pointer is a finger (phones, tablets). Controls
+    // grow to a 44px touch target there and stay compact for a mouse.
+    plugin(({ addVariant }) => {
+      addVariant('coarse', '@media (pointer: coarse)');
+    }),
+  ],
 };
 
 export default config;

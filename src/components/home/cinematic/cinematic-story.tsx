@@ -148,6 +148,16 @@ export function CinematicStory() {
     };
 
     const settle = (now: number) => {
+      // A dialog is open (Radix marks the body while it locks scrolling). The page stays exactly
+      // where it is behind the overlay: a glide in progress stops, and none starts.
+      if (document.body.hasAttribute('data-scroll-locked')) {
+        glide = null;
+        gesturing = false;
+        anchor = story.target;
+        lastTarget = story.target;
+        return;
+      }
+
       if (glide) {
         // The viewer took over mid-glide (scrollbar, keys, a drag): let go.
         if (Math.abs(window.scrollY - lastSetY) > 3) {
