@@ -114,7 +114,11 @@ export function UnitRow({
   return (
     <li
       className={cn(
-        'group relative flex flex-col gap-3 px-4 py-4 transition-colors sm:flex-row sm:items-center sm:gap-5 sm:px-5',
+        // The price / Open action sits on the right at every width, as it does on a laptop. Only a
+        // "Being Baked" row stacks on a phone: its action (cookie, label, Notify me) is too wide
+        // to share a line with the title.
+        'group relative flex gap-3 px-4 py-4 transition-colors sm:flex-row sm:items-center sm:gap-5 sm:px-5',
+        baking ? 'flex-col' : 'flex-row items-center',
         'focus-within:bg-accent/25',
         openable && 'hover:bg-accent/25',
         baking && 'bg-primary/[0.04]',
@@ -128,7 +132,7 @@ export function UnitRow({
         />
       )}
 
-      <div className="flex min-w-0 flex-1 items-start gap-4 sm:items-center sm:gap-5">
+      <div className="flex min-w-0 flex-1 items-start gap-3 sm:items-center sm:gap-5">
         <span
           aria-hidden
           className={cn(
@@ -188,9 +192,14 @@ export function UnitRow({
         </div>
       </div>
 
-      {/* The one thing you can do with this unit. Aligned under the title on a
-          phone, to the right of the row from `sm` up. */}
-      <div className="flex items-center gap-3 pl-[3.25rem] sm:shrink-0 sm:justify-end sm:pl-0">
+      {/* The one thing you can do with this unit: to the right of the row. A "Being Baked" row on
+          a phone has it under the title instead, indented to line up with it. */}
+      <div
+        className={cn(
+          'flex items-center gap-3 sm:shrink-0 sm:justify-end sm:pl-0',
+          baking ? 'pl-[3.25rem]' : 'shrink-0 justify-end',
+        )}
+      >
         {baking ? (
           // Being Baked. The cookie is decorative; the words carry the state, so
           // nothing here depends on the animation being seen or running.
