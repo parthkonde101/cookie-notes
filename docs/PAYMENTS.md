@@ -86,11 +86,12 @@ payments/refunds/webhooks match what `src/lib/commerce/razorpay.ts` and `webhook
 
 ### Payment methods (UPI)
 
-Razorpay decides which methods Checkout can show: only those enabled on the Razorpay account
-(Test Mode and Live Mode are configured separately). The app does not restrict methods; it asks
-Checkout to list **UPI first** (`config.display` in `src/components/commerce/buy-button.tsx`) and
-leaves every other enabled method below it. If UPI is not enabled on the account it will not
-appear whatever the code says, so enable it in the Razorpay Dashboard first.
+Razorpay decides which methods Checkout shows: only those enabled on the Razorpay account (Test
+Mode and Live Mode are configured separately), in Razorpay's own order. The app passes no
+method configuration, so there is one UPI entry, Razorpay's, and on a phone it lists the UPI apps
+installed there. Do not add a custom UPI block (`config.display.blocks`) on top: in Live mode it
+makes UPI appear twice. To change the order of methods, use the Razorpay Dashboard's payment
+configuration instead of code.
 
 The logo in the Checkout window is `public/checkout-logo.png` (512×512, rendered from
 `public/favicon.svg`); Checkout loads it from `<site origin>/checkout-logo.png`, so it must stay

@@ -256,16 +256,9 @@ export function BuyButton({
         order_id: order.gatewayOrderId,
         prefill: order.prefill,
         theme: accent ? { color: `hsl(${accent})` } : undefined,
-        // Students pay from their phones, so UPI goes first (on a phone, Razorpay lists the UPI
-        // apps installed there). Every other method the account has enabled stays below it:
-        // this only orders what Razorpay offers, it cannot add a method the account lacks.
-        config: {
-          display: {
-            blocks: { upi: { name: 'Pay with UPI', instruments: [{ method: 'upi' }] } },
-            sequence: ['block.upi'],
-            preferences: { show_default_blocks: true },
-          },
-        },
+        // No `config.display` on purpose: Razorpay shows the methods enabled on the account in its
+        // own order, and on a phone its UPI entry lists the UPI apps installed there. A custom
+        // UPI block on top of that only made UPI appear twice in Live mode.
         handler: (response: RazorpaySuccess) => void confirm(order, response),
         modal: {
           // Closing the window is not a failure and not a success. If nothing was paid the
