@@ -96,6 +96,8 @@ export default async function AdminBundlePage({ params }: { params: Promise<{ id
             isFeatured: bundle.isFeatured,
             position: bundle.position,
             coverSubjectId: raw.coverSubjectId,
+            coverMode: bundle.coverMode,
+            customCover: bundle.customCover,
             noteIds: inBundle,
             subjectIds: bundle.subjectIds,
           }}

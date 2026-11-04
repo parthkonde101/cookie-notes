@@ -59,7 +59,9 @@ RAZORPAY_WEBHOOK_SECRET=...         # a secret YOU choose when creating the webh
 
 ## 3. Database
 
-The change is additive: `prisma/migrations/20261001000000_commerce/migration.sql`, applied by
+Two additive migrations: `20261101000000_bundle_cover` (bundle cover mode and image columns) follows the commerce one below. **Apply a migration to a database before deploying code that needs it** — the new code reads the new columns, so deploying first breaks the subject pages and the bundle editor until the migration runs. Both migrations are safe for the previous code to run against.
+
+The commerce change is additive: `prisma/migrations/20261001000000_commerce/migration.sql`, applied by
 `npm run db:setup`. It is guarded and idempotent (safe to run twice) and adds the `isPaid` column
 on notes, the commerce tables, and CHECK constraints (e.g. a paid note must be restricted and
 priced). Existing notes default to not-for-sale, so the public catalogue is unchanged.
@@ -126,8 +128,11 @@ app sees them. Never set `RAZORPAY_API_BASE`.
 
 * **Notes → a note → Access and price**: Free / Restricted / For sale. Changes are audit-logged.
   Price changes affect future purchases only.
-* **Bundles**: create, choose notes (only for-sale notes), set a price, subjects to promote on, an
-  optional cover, active/featured. The preview is exactly what students see. A bundle can go
+* **Bundles**: create, choose notes (only for-sale notes), set a price, subjects to promote on, a
+  cover, active/featured. The cover is one of: a subject's notebook cover (the default, and how every
+  earlier bundle behaves), an image uploaded for the bundle (JPG, PNG or WebP, up to 5 MB, portrait
+  3:4 fits best), or no cover at all (a text-only card). An upload is stored at once but only shown to
+  students after *Save bundle*; removing it falls back to the subject cover. The preview is exactly what students see. A bundle can go
   live only with ≥ 2 published notes and a subject page. "Save ₹X" is shown only when the sum of
   the notes' prices really exceeds the bundle price.
 * **Sales**: gross (by payment time), refunds (by refund time), net, average order, notes vs

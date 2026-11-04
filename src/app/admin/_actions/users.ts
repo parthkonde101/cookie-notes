@@ -11,7 +11,14 @@ import { recordEvent } from '@/lib/analytics/events';
 import { writeAudit } from '@/lib/audit';
 import { adminUserSchema, firstError } from '@/lib/validation';
 
-export type ActionResult = { ok: true; message?: string } | { ok: false; error: string; code?: string };
+/**
+ * `redirectTo` is for an action that finishes by moving the admin to another page. It is returned
+ * rather than thrown with `redirect()`: a thrown redirect reaches the calling form as an exception,
+ * which the form reports as a failure for the moment before the navigation lands.
+ */
+export type ActionResult =
+  | { ok: true; message?: string; redirectTo?: string }
+  | { ok: false; error: string; code?: string };
 
 function value(form: FormData, key: string): string {
   const raw = form.get(key);

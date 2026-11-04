@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/feedback';
 import { cn } from '@/lib/utils';
 
-export type ActionResult = { ok: true; message?: string } | { ok: false; error: string };
+export type ActionResult = { ok: true; message?: string; redirectTo?: string } | { ok: false; error: string };
 
 interface ActionFormProps {
   action: (formData: FormData) => Promise<ActionResult>;
@@ -47,7 +47,8 @@ export function ActionForm({
           toast.success(result.message ?? 'Saved.');
           if (resetOnSuccess) formRef.current?.reset();
           onSuccess?.();
-          router.refresh();
+          if (result.redirectTo) router.push(result.redirectTo);
+          else router.refresh();
         } else {
           setError(result.error);
         }

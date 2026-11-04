@@ -211,6 +211,7 @@ export default async function SubjectPage({ params }: { params: Promise<{ slug: 
                     priceMinor={bundle.priceMinor}
                     featured={bundle.isFeatured}
                     cover={bundle.cover}
+                    showCover={bundle.showCover}
                     notes={bundle.notes}
                     savings={bundle.savings}
                     signedIn={Boolean(auth)}

@@ -132,7 +132,8 @@ export default async function AdminNotePage({ params }: { params: Promise<{ id: 
                 noteId={note.id}
                 catalog={catalog}
                 initial={{
-                  title: note.title,
+                  // A note in a unit is named after the unit, so the unit's name is what is edited.
+                  title: note.unit?.name ?? note.title,
                   description: note.description ?? '',
                   subjectId: note.subjectId,
                   unitId: note.unitId ?? '',

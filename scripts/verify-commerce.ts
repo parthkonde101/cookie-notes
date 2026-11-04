@@ -891,7 +891,7 @@ async function main() {
     const pc = await makeNote('Bundle C', { isPaid: true, priceMinor: 30_000, status: 'DRAFT' });
     const free = await makeNote('Free filler', { visibility: 'FREE' });
     const created = await adminLib.createBundle({ title: '[cmtest] Draft bundle', priceRaw: '250', actor });
-    const base = { bundleId: created.id, title: '[cmtest] Draft bundle', description: '', priceRaw: '250', position: '0', isActive: false, isFeatured: false, noteIds: [pa.id, pb.id], subjectIds: [subject.id], coverSubjectId: null as string | null, actor };
+    const base = { bundleId: created.id, title: '[cmtest] Draft bundle', description: '', priceRaw: '250', position: '0', isActive: false, isFeatured: false, noteIds: [pa.id, pb.id], subjectIds: [subject.id], coverSubjectId: null as string | null, coverMode: undefined as 'SUBJECT' | 'CUSTOM' | 'NONE' | undefined, actor };
     const save = (over: Partial<typeof base>) => adminLib.saveBundle({ ...base, ...over });
     check('a bundle starts as an inactive draft with the price in paise', await (async () => { const b = await prisma.bundle.findUnique({ where: { id: created.id } }); return b?.isActive === false && b.priceMinor === 25_000 && (await auditCount(created.id, 'BUNDLE_CREATED')) === 1; })());
     check('creating a bundle needs a real title and a valid price', await rejects(() => adminLib.createBundle({ title: ' ', priceRaw: '250', actor })) && await rejects(() => adminLib.createBundle({ title: 'Pack', priceRaw: '0', actor })));
@@ -908,6 +908,19 @@ async function main() {
     check('removing a note and a subject removes only those', (await thrown(() => save({ noteIds: [pa.id, pb.id], subjectIds: [subject.id] }))) === null && (await prisma.bundleSubject.count({ where: { bundleId: created.id } })) === 1);
     check('a bundle can hold at most 60 notes', ((await thrown(() => save({ noteIds: Array.from({ length: 61 }, (_, i) => `n${i}`) }))) ?? '').includes('at most 60'));
     check('every save is in the audit log', (await auditCount(created.id, 'BUNDLE_UPDATED')) === 4);
+    {
+      // --- bundle covers: subject cover (the default), the bundle's own image, or none ---
+      const cover = async () => (await prisma.bundle.findUnique({ where: { id: created.id }, select: { coverMode: true, coverStorageKey: true } }))!;
+      const shown = async () => (await (await import('../src/lib/commerce/bundles')).bundleForAdmin(created.id))!;
+      check('a bundle uses its subject cover by default, so existing bundles look exactly as before', (await cover()).coverMode === 'SUBJECT' && (await shown()).showCover === true);
+      check('"my own image" is refused until an image has been uploaded', ((await thrown(() => save({ coverMode: 'CUSTOM' }))) ?? '').includes('Upload an image') && (await cover()).coverMode === 'SUBJECT');
+      check('an unknown cover option is refused', await rejects(() => save({ coverMode: 'WALLPAPER' as never })));
+      check('"no cover" hides the picture, and a save that does not mention covers leaves the choice alone', (await thrown(() => save({ coverMode: 'NONE' }))) === null && (await shown()).showCover === false && (await shown()).cover === null && (await thrown(() => save({}))) === null && (await cover()).coverMode === 'NONE');
+      await prisma.bundle.update({ where: { id: created.id }, data: { coverStorageKey: `covers/bundle-${created.id}/x.png`, coverMimeType: 'image/png', coverUpdatedAt: new Date(1_700_000_000_000) } });
+      check('with an image on file, "my own image" shows it from a version-stamped URL', (await thrown(() => save({ coverMode: 'CUSTOM' }))) === null && (await shown()).cover === `/api/bundles/${created.id}/cover?v=1700000000000`);
+      check('switching to another option keeps the uploaded image, so switching back needs no re-upload', (await thrown(() => save({ coverMode: 'SUBJECT' }))) === null && (await cover()).coverStorageKey !== null && (await shown()).customCover !== null);
+      await prisma.bundle.update({ where: { id: created.id }, data: { coverMode: 'SUBJECT', coverStorageKey: null, coverMimeType: null, coverUpdatedAt: null } });
+    }
     check('a bundle nobody bought can be deleted; one with orders cannot', await (async () => {
       const lonely = await adminLib.createBundle({ title: '[cmtest] Lonely', priceRaw: '100', actor });
       const gone = (await thrown(() => adminLib.deleteBundle({ bundleId: lonely.id, actor }))) === null && (await prisma.bundle.count({ where: { id: lonely.id } })) === 0;
@@ -1063,6 +1076,7 @@ async function main() {
     const overview = visible(await html(adminClient, '/admin'));
     check('the admin overview shows total sales (net of refunds), this month, paid orders and refunds, with the real figures', overview.includes('Total sales') && overview.includes('This month') && overview.includes('Paid orders') && overview.includes(money.formatInr(allTime.netMinor)) && overview.includes(money.formatInr(allTime.refundsMinor)));
     check('students cannot see the overview (and so cannot see sales totals)', (await status(studentClient, '/admin')) === 307 && (await status(anon, '/admin')) === 307);
+    check('a bundle with no uploaded cover answers 404, and only an admin can upload or remove one', (await anon.request(`/api/bundles/${bundle.id}/cover`)).status === 404 && (await anon.request(`/api/admin/bundles/${bundle.id}/cover`, { method: 'POST' })).status === 401 && (await studentClient.request(`/api/admin/bundles/${bundle.id}/cover`, { method: 'DELETE' })).status === 404);
     const logo = await anon.request('/checkout-logo.png');
     check('the checkout logo is public (Razorpay loads it from the student\'s browser) and is a real PNG', logo.status === 200 && (logo.headers.get('content-type') ?? '').includes('image/png') && (await logo.arrayBuffer()).byteLength > 1000);
     check('the sidebar links Bundles and Sales', (await html(adminClient, '/admin')).includes('/admin/sales') && (await html(adminClient, '/admin')).includes('/admin/bundles'));

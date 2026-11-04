@@ -12,6 +12,7 @@ import {
   FileText,
   FolderPlus,
   Layers,
+  Pencil,
   Plus,
   Trash2,
 } from 'lucide-react';
@@ -48,6 +49,7 @@ import {
   deleteSubjectAction,
   deleteUnitAction,
   setUnitBakingAction,
+  updateUnitAction,
 } from '@/app/admin/_actions/catalog';
 import type { CatalogSemester, CatalogUnit, PlacementOption } from '@/lib/admin/catalog';
 import { cn, formatBytes, pluralize } from '@/lib/utils';
@@ -60,6 +62,7 @@ type DialogState =
   | { kind: 'semester' }
   | { kind: 'subject'; semesterId?: string }
   | { kind: 'unit'; subjectId: string; subjectLabel: string }
+  | { kind: 'rename-unit'; unit: Pick<CatalogUnit, 'id' | 'index' | 'name' | 'description'> }
   | { kind: 'upload'; subjectId?: string; unitId?: string };
 
 /**
@@ -425,6 +428,7 @@ export function ContentManager({
                                     key={unit.id}
                                     unit={unit}
                                     currencySymbol={currencySymbol}
+                                    onRename={() => setDialog({ kind: 'rename-unit', unit })}
                                     onUpload={() =>
                                       setDialog({
                                         kind: 'upload',
@@ -551,6 +555,44 @@ export function ContentManager({
             </>
           )}
 
+          {dialog.kind === 'rename-unit' && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Rename Unit {dialog.unit.index}</DialogTitle>
+                <DialogDescription>
+                  Students see this name on the subject page and in the reader. The PDF in the unit
+                  takes the new name too.
+                </DialogDescription>
+              </DialogHeader>
+              <ActionForm
+                key={dialog.unit.id}
+                action={updateUnitAction.bind(null, dialog.unit.id)}
+                submitLabel="Save"
+                onSuccess={close}
+              >
+                <Field label="Name" htmlFor="rename-unit-name">
+                  <Input
+                    id="rename-unit-name"
+                    name="name"
+                    defaultValue={dialog.unit.name}
+                    required
+                    maxLength={120}
+                    autoFocus
+                  />
+                </Field>
+                <Field label="Description" htmlFor="rename-unit-description">
+                  <Textarea
+                    id="rename-unit-description"
+                    name="description"
+                    rows={2}
+                    maxLength={400}
+                    defaultValue={dialog.unit.description ?? ''}
+                  />
+                </Field>
+              </ActionForm>
+            </>
+          )}
+
           {dialog.kind === 'upload' && (
             <>
               <DialogHeader>
@@ -589,10 +631,12 @@ export function ContentManager({
 function UnitRow({
   unit,
   currencySymbol,
+  onRename,
   onUpload,
 }: {
   unit: CatalogUnit;
   currencySymbol: string;
+  onRename: () => void;
   onUpload: () => void;
 }) {
   const note = unit.note;
@@ -647,6 +691,9 @@ function UnitRow({
         )}
 
         <div className="flex shrink-0 items-center gap-1">
+          <Button variant="ghost" size="icon-sm" aria-label={`Rename ${unit.name}`} onClick={onRename}>
+            <Pencil className="size-3.5" />
+          </Button>
           <Button variant="ghost" size="sm" onClick={onUpload}>
             <FilePlus2 className="size-3.5" />
             {note ? 'Replace' : 'Upload'}

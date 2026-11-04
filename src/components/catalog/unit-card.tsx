@@ -27,13 +27,13 @@ export interface UnitRowProps {
 }
 
 /**
- * Unit titles are often stored as "Unit 3 - Network Layer" or "Unit 3: Network
- * Layer". The row already shows the number, so repeating it in the title would
+ * Unit titles are often stored as "Unit 3 - Network Layer", "Unit 3: Network
+ * Layer" or "Unit 3 · Network Layer". The row already shows the number, so repeating it in the title would
  * read "03 · Unit 3 · Unit 3 - Network Layer". Only a leading label that matches
  * this unit's own position is removed; anything else is left exactly as written.
  */
 export function unitTitle(name: string, index: number): string {
-  const stripped = name.replace(/^\s*unit\s*(\d+)\s*[:.)\-–—]?\s*/i, (whole, digits: string) =>
+  const stripped = name.replace(/^\s*unit\s*(\d+)\s*[:.)\-–—·•|]?\s*/i, (whole, digits: string) =>
     Number(digits) === index ? '' : whole,
   );
   return stripped.trim() || name;
@@ -197,7 +197,8 @@ export function UnitRow({
       <div
         className={cn(
           'flex items-center gap-3 sm:shrink-0 sm:justify-end sm:pl-0',
-          baking ? 'pl-[3.25rem]' : 'shrink-0 justify-end',
+          // Wraps rather than squeezes: at 320–375px the status and "Notify me" do not share a line.
+          baking ? 'flex-wrap pl-[3.25rem] sm:flex-nowrap' : 'shrink-0 justify-end',
         )}
       >
         {baking ? (

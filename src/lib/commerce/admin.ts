@@ -1,5 +1,6 @@
 import 'server-only';
 import { prisma } from '@/lib/prisma';
+import type { BundleCoverMode } from '@/generated/prisma/client';
 import { Errors } from '@/lib/errors';
 import { writeAudit } from '@/lib/audit';
 import type { RequestContext } from '@/lib/request';
@@ -165,6 +166,11 @@ export interface BundleInput {
   noteIds: string[];
   subjectIds: string[];
   coverSubjectId: string | null;
+  /**
+   * Where the cover comes from. Left out, the bundle keeps whatever it has — which is what keeps
+   * every caller that predates cover modes (and their tests) behaving as before.
+   */
+  coverMode?: BundleCoverMode;
   actor: AdminActor;
   ctx?: RequestContext | null;
 }
@@ -176,7 +182,10 @@ export interface BundleInput {
  * to bundle.
  */
 export async function saveBundle(input: BundleInput): Promise<{ message: string }> {
-  const existing = await prisma.bundle.findUnique({ where: { id: input.bundleId }, select: { id: true } });
+  const existing = await prisma.bundle.findUnique({
+    where: { id: input.bundleId },
+    select: { id: true, coverStorageKey: true },
+  });
   if (!existing) throw Errors.notFound('That bundle no longer exists.');
 
   const title = input.title.trim();
@@ -214,6 +223,13 @@ export async function saveBundle(input: BundleInput): Promise<{ message: string 
     throw Errors.validation('That cover subject no longer exists.');
   }
 
+  if (input.coverMode && !['SUBJECT', 'CUSTOM', 'NONE'].includes(input.coverMode)) {
+    throw Errors.validation('Choose how the bundle’s cover is shown.');
+  }
+  if (input.coverMode === 'CUSTOM' && !existing.coverStorageKey) {
+    throw Errors.validation('Upload an image first, or choose a different cover option.');
+  }
+
   if (input.isActive) {
     if (notes.length < 2) throw Errors.validation('Add at least two notes before making a bundle active.');
     const unpublished = notes.filter((note) => note.status !== 'PUBLISHED');
@@ -238,6 +254,7 @@ export async function saveBundle(input: BundleInput): Promise<{ message: string 
         isFeatured: input.isFeatured,
         position,
         coverSubjectId: input.coverSubjectId,
+        ...(input.coverMode ? { coverMode: input.coverMode } : {}),
       },
     });
     await tx.bundleItem.deleteMany({ where: { bundleId: input.bundleId, noteId: { notIn: noteIds } } });
@@ -265,7 +282,13 @@ export async function saveBundle(input: BundleInput): Promise<{ message: string 
     targetType: 'bundle',
     targetId: input.bundleId,
     targetLabel: title,
-    metadata: { priceMinor: price.minor, isActive: input.isActive, notes: noteIds.length, subjects: subjectIds.length },
+    metadata: {
+        priceMinor: price.minor,
+        isActive: input.isActive,
+        notes: noteIds.length,
+        subjects: subjectIds.length,
+        ...(input.coverMode ? { coverMode: input.coverMode } : {}),
+      },
     ctx: input.ctx,
   });
 

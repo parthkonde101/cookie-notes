@@ -17,11 +17,10 @@ import {
 } from '@/components/ui/dialog';
 import { Field } from '@/components/admin/action-form';
 import { describeStorageFailure } from '@/components/admin/note-upload-form';
+import { uploadCoverImage } from '@/lib/admin/upload-cover';
 import { formatBytes } from '@/lib/utils';
 import type { CatalogPyq } from '@/lib/admin/catalog';
 
-const COVER_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
-const COVER_MAX_BYTES = 5 * 1024 * 1024;
 
 /**
  * The two things a subject owns that are not notes: its notebook cover, and its
@@ -79,67 +78,13 @@ function CoverManager({
   async function upload(file: File) {
     setError(null);
 
-    if (!COVER_TYPES.includes(file.type)) {
-      setError('Covers must be a JPG, PNG or WebP image.');
-      return;
-    }
-    if (file.size > COVER_MAX_BYTES) {
-      setError(`That image is ${formatBytes(file.size)}. The limit is 5 MB.`);
-      return;
-    }
-
     // Show the chosen image straight away rather than after the round trip.
     const objectUrl = URL.createObjectURL(file);
     setPreview(objectUrl);
     setBusy(true);
 
     try {
-      const presignResponse = await fetch('/api/admin/uploads/presign', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          kind: 'cover',
-          subjectId,
-          fileName: file.name,
-          contentType: file.type,
-          size: file.size,
-        }),
-      });
-      const presign = (await presignResponse.json()) as
-        | { mode: 'proxy' }
-        | { mode: 'direct'; key: string; url: string; headers: Record<string, string> }
-        | { error?: string };
-
-      if (!presignResponse.ok) {
-        throw new Error(
-          ('error' in presign && presign.error) || 'Could not start the upload. Please try again.',
-        );
-      }
-
-      const payload = new FormData();
-      if ('mode' in presign && presign.mode === 'direct') {
-        const put = await fetch(presign.url, {
-          method: 'PUT',
-          headers: presign.headers,
-          body: file,
-        }).catch(() => null);
-
-        if (!put) throw new Error(describeStorageFailure(0, ''));
-        if (!put.ok) {
-          throw new Error(describeStorageFailure(put.status, await put.text().catch(() => '')));
-        }
-        payload.append('storageKey', presign.key);
-      } else {
-        payload.append('file', file);
-      }
-
-      const response = await fetch(`/api/admin/subjects/${subjectId}/cover`, {
-        method: 'POST',
-        body: payload,
-      });
-      const data = (await response.json().catch(() => ({}))) as { error?: string };
-      if (!response.ok) throw new Error(data.error ?? 'The cover could not be saved.');
-
+      await uploadCoverImage(file, { kind: 'subject', id: subjectId });
       toast.success('Cover updated.');
       setPreview(null);
       if (inputRef.current) inputRef.current.value = '';

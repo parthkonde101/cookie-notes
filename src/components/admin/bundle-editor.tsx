@@ -1,14 +1,17 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { Search } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
+import { ImageOff, ImageUp, Images, Loader2, Search } from 'lucide-react';
+import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Input, Select, Textarea } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Alert } from '@/components/ui/feedback';
 import { ActionForm, Field } from '@/components/admin/action-form';
 import { BundleCard } from '@/components/commerce/bundle-card';
 import { saveBundleAction } from '@/app/admin/_actions/commerce';
+import { uploadCoverImage } from '@/lib/admin/upload-cover';
 import { bundleSavings, formatInr, minorToInputValue, parsePriceInput } from '@/lib/commerce/money';
 import { cn } from '@/lib/utils';
 
@@ -29,6 +32,8 @@ export interface EditorSubject {
   cover: string | null;
 }
 
+export type CoverMode = 'SUBJECT' | 'CUSTOM' | 'NONE';
+
 interface Props {
   bundle: {
     id: string;
@@ -39,6 +44,9 @@ interface Props {
     isFeatured: boolean;
     position: number;
     coverSubjectId: string | null;
+    coverMode: CoverMode;
+    /** The uploaded image's URL, if there is one (kept while another mode is chosen). */
+    customCover: string | null;
     noteIds: string[];
     subjectIds: string[];
   };
@@ -64,6 +72,12 @@ export function BundleEditor({ bundle, notes, subjects }: Props) {
   const [noteIds, setNoteIds] = useState(() => new Set(bundle.noteIds));
   const [subjectIds, setSubjectIds] = useState(() => new Set(bundle.subjectIds));
   const [coverSubjectId, setCoverSubjectId] = useState(bundle.coverSubjectId ?? '');
+  const [coverMode, setCoverMode] = useState<CoverMode>(bundle.coverMode);
+  const [customCover, setCustomCover] = useState(bundle.customCover);
+  const [coverBusy, setCoverBusy] = useState(false);
+  const [coverError, setCoverError] = useState<string | null>(null);
+  const [coverPreview, setCoverPreview] = useState<string | null>(null);
+  const coverInput = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
 
   const parsedPrice = parsePriceInput(price);
@@ -86,8 +100,11 @@ export function BundleEditor({ bundle, notes, subjects }: Props) {
   }, [notes, query, noteIds]);
 
   const coverFromSubject = subjects.find((subject) => subject.id === (coverSubjectId || [...subjectIds][0]))?.cover ?? null;
+  // What the preview card (and so a student) would show for the option currently chosen.
+  const shownCover = coverMode === 'NONE' ? null : coverMode === 'CUSTOM' ? (coverPreview ?? customCover) : coverFromSubject;
 
   const problems: string[] = [];
+  if (coverMode === 'CUSTOM' && !customCover) problems.push('Upload an image for the cover, or choose another cover option.');
   if (selected.length < 2) problems.push('Add at least two notes.');
   if (selected.some((note) => note.status !== 'PUBLISHED')) problems.push('Every note in it must be published.');
   if (subjectIds.size === 0) problems.push('Choose at least one subject page to promote it on.');
@@ -98,6 +115,44 @@ export function BundleEditor({ bundle, notes, subjects }: Props) {
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setter(next);
+  }
+
+  async function uploadCover(file: File) {
+    setCoverError(null);
+    // Show the chosen image straight away rather than after the round trip.
+    const objectUrl = URL.createObjectURL(file);
+    setCoverPreview(objectUrl);
+    setCoverBusy(true);
+    try {
+      const { updatedAt } = await uploadCoverImage(file, { kind: 'bundle', id: bundle.id });
+      setCustomCover(`/api/bundles/${bundle.id}/cover?v=${updatedAt}`);
+      setCoverMode('CUSTOM');
+      toast.success('Image uploaded. Press Save bundle to use it.');
+    } catch (error) {
+      setCoverError(error instanceof Error ? error.message : 'The upload failed.');
+    } finally {
+      setCoverPreview(null);
+      URL.revokeObjectURL(objectUrl);
+      if (coverInput.current) coverInput.current.value = '';
+      setCoverBusy(false);
+    }
+  }
+
+  async function removeCover() {
+    setCoverBusy(true);
+    setCoverError(null);
+    try {
+      const response = await fetch(`/api/admin/bundles/${bundle.id}/cover`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('The image could not be removed.');
+      setCustomCover(null);
+      // The server drops a bundle back to its subject's cover when its own image goes.
+      if (coverMode === 'CUSTOM') setCoverMode('SUBJECT');
+      toast.success('Image removed.');
+    } catch (error) {
+      setCoverError(error instanceof Error ? error.message : 'That did not work.');
+    } finally {
+      setCoverBusy(false);
+    }
   }
 
   return (
@@ -221,16 +276,112 @@ export function BundleEditor({ bundle, notes, subjects }: Props) {
           </div>
         </fieldset>
 
-        <Field label="Cover" htmlFor="coverSubjectId" hint="Uses an existing notebook cover. By default, the first promoted subject’s.">
-          <Select id="coverSubjectId" name="coverSubjectId" value={coverSubjectId} onChange={(e) => setCoverSubjectId(e.target.value)}>
-            <option value="">First promoted subject’s cover</option>
-            {subjects.filter((subject) => subject.cover).map((subject) => (
-              <option key={subject.id} value={subject.id}>
-                {subject.name}
-              </option>
+        <fieldset className="space-y-3">
+          <legend className="text-sm font-medium">Cover</legend>
+          <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Cover">
+            {(
+              [
+                { value: 'SUBJECT', icon: Images, label: 'Subject cover', hint: 'Borrow a notebook cover' },
+                { value: 'CUSTOM', icon: ImageUp, label: 'My own image', hint: 'Upload one for this bundle' },
+                { value: 'NONE', icon: ImageOff, label: 'No cover', hint: 'Text only, no picture' },
+              ] as const
+            ).map((option) => (
+              <label
+                key={option.value}
+                className={cn(
+                  'flex cursor-pointer items-start gap-2.5 rounded-md border p-3 text-sm transition-colors focus-within:ring-2 focus-within:ring-ring',
+                  coverMode === option.value ? 'border-primary/60 bg-primary/8' : 'border-border hover:bg-secondary/50',
+                )}
+              >
+                <input
+                  type="radio"
+                  name="coverChoice"
+                  value={option.value}
+                  checked={coverMode === option.value}
+                  onChange={() => setCoverMode(option.value)}
+                  className="sr-only"
+                />
+                <option.icon
+                  aria-hidden
+                  className={cn('mt-0.5 size-4 shrink-0', coverMode === option.value ? 'text-primary' : 'text-muted-foreground')}
+                />
+                <span className="min-w-0">
+                  <span className="block font-medium">{option.label}</span>
+                  <span className="block text-xs text-muted-foreground">{option.hint}</span>
+                </span>
+              </label>
             ))}
-          </Select>
-        </Field>
+          </div>
+          <input type="hidden" name="coverMode" value={coverMode} />
+
+          {coverMode === 'SUBJECT' && (
+            <Field label="Which subject’s cover" htmlFor="coverSubjectId" hint="By default, the first promoted subject’s.">
+              <Select id="coverSubjectId" name="coverSubjectId" value={coverSubjectId} onChange={(e) => setCoverSubjectId(e.target.value)}>
+                <option value="">First promoted subject’s cover</option>
+                {subjects.filter((subject) => subject.cover).map((subject) => (
+                  <option key={subject.id} value={subject.id}>
+                    {subject.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+          {/* The chosen subject is still posted when another option is showing, so switching back
+              and forth never loses it. */}
+          {coverMode !== 'SUBJECT' && <input type="hidden" name="coverSubjectId" value={coverSubjectId} />}
+
+          {coverMode === 'CUSTOM' && (
+            <div className="flex gap-3 rounded-md border border-border p-3">
+              <div className="relative aspect-[3/4] w-16 shrink-0 overflow-hidden rounded border border-border bg-muted">
+                {coverPreview ?? customCover ? (
+                  // A blob: preview and a same-origin API URL both work in a plain <img>.
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={(coverPreview ?? customCover) as string} alt="Your cover image" className="h-full w-full object-cover" />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                    <ImageUp aria-hidden className="size-4" />
+                  </div>
+                )}
+                {coverBusy && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-background/70">
+                    <Loader2 aria-hidden className="size-4 animate-spin text-primary" />
+                  </div>
+                )}
+              </div>
+              <div className="flex min-w-0 flex-col justify-center gap-1.5">
+                {coverError ? (
+                  <p className="text-xs leading-snug text-destructive">{coverError}</p>
+                ) : (
+                  <p className="text-xs leading-snug text-muted-foreground">
+                    JPG, PNG or WebP, up to 5 MB. Portrait (3:4) fits best; other shapes are cropped to fill. An upload is
+                    kept straight away; it is shown to students once you press Save bundle.
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-1.5">
+                  <Button type="button" variant="outline" size="sm" disabled={coverBusy} onClick={() => coverInput.current?.click()}>
+                    {customCover ? 'Change image' : 'Upload image'}
+                  </Button>
+                  {customCover && (
+                    <Button type="button" variant="ghost" size="sm" disabled={coverBusy} onClick={() => void removeCover()}>
+                      Remove
+                    </Button>
+                  )}
+                </div>
+                <input
+                  ref={coverInput}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="sr-only"
+                  aria-label="Upload a cover image for this bundle"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void uploadCover(file);
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </fieldset>
       </ActionForm>
 
       <aside className="space-y-4 lg:sticky lg:top-6 lg:self-start">
@@ -245,7 +396,8 @@ export function BundleEditor({ bundle, notes, subjects }: Props) {
           description={description || null}
           priceMinor={priceMinor}
           featured={featured}
-          cover={coverFromSubject}
+          cover={shownCover}
+          showCover={coverMode !== 'NONE'}
           notes={selected.map((note) => ({ id: note.id, title: note.title, priceMinor: note.priceMinor, isPaid: note.isPaid, owned: false }))}
           savings={savings}
           signedIn

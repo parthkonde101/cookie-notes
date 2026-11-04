@@ -22,14 +22,21 @@ export interface BundleCardProps {
   description: string | null;
   priceMinor: number;
   featured?: boolean;
+  /** The picture, or null. With `showCover` true and no picture, a generated placeholder is drawn. */
   cover: string | null;
+  /** False for "no cover": the card is text only, with no picture and no placeholder either. */
+  showCover?: boolean;
   notes: BundleCardNote[];
   /** From `bundleSavings`: only present when there is an honest comparison. */
   savings: { separateMinor: number; savingsMinor: number; percent: number } | null;
   signedIn: boolean;
   /** Where to send a signed-out student back to after they sign in. */
   returnTo: string;
-  /** Admin preview: identical look, and the button does nothing. */
+  /**
+   * Admin preview: the button does nothing, and the card always takes its phone layout (the
+   * editor shows it in a narrow column, so the laptop arrangement would not fit — and the phone
+   * layout is the one worth checking).
+   */
   preview?: boolean;
 }
 
@@ -48,12 +55,15 @@ export function BundleCard({
   priceMinor,
   featured,
   cover,
+  showCover = true,
   notes,
   savings,
   signedIn,
   returnTo,
   preview = false,
 }: BundleCardProps) {
+  // The laptop arrangement (`sm:` and up). A preview never uses it; see `preview` above.
+  const wide = (classes: string) => (preview ? '' : classes);
   const ownedCount = notes.filter((note) => note.owned).length;
   const allOwned = notes.length > 0 && ownedCount === notes.length;
 
@@ -65,37 +75,48 @@ export function BundleCard({
         featured ? 'border-primary/45 shadow-[0_0_0_1px_hsl(var(--primary)/0.12)]' : 'border-border',
       )}
     >
-      <div className={cn('flex flex-col gap-5 p-4', !preview && 'sm:flex-row sm:items-stretch sm:gap-6 sm:p-5')}>
-        <div className={cn('relative aspect-[3/4] w-20 shrink-0 overflow-hidden rounded-md border border-border bg-muted shadow-md', !preview && 'hidden sm:block')}>
-          {cover ? (
-            <Image src={cover} alt="" fill sizes="80px" className="object-cover" />
-          ) : (
-            <div
-              aria-hidden
-              className="flex h-full w-full items-center justify-center bg-gradient-to-br from-primary/25 to-primary/5"
-            >
-              <BookOpenCheck className="size-6 text-primary/70" />
-            </div>
-          )}
-        </div>
-
+      <div className={cn('flex flex-col gap-4 p-4', wide('sm:flex-row sm:items-stretch sm:gap-6 sm:p-5'))}>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            {featured && (
-              <Badge variant="default" className="gap-1">
-                <Sparkles className="size-3" /> Featured
-              </Badge>
+          <div className={cn('flex gap-3.5', wide('sm:gap-6'))}>
+            {showCover && (
+              <div
+                className={cn(
+                  'relative aspect-[3/4] w-16 shrink-0 self-start overflow-hidden rounded-md border border-border bg-muted shadow-md',
+                  wide('sm:w-20'),
+                )}
+              >
+                {cover ? (
+                  <Image src={cover} alt="" fill sizes="80px" className="object-cover" />
+                ) : (
+                  <div
+                    aria-hidden
+                    className="flex h-full w-full items-center justify-center bg-gradient-to-br from-primary/25 to-primary/5"
+                  >
+                    <BookOpenCheck className="size-6 text-primary/70" />
+                  </div>
+                )}
+              </div>
             )}
-            <span className="text-xs font-medium uppercase tracking-wider text-primary">
-              Bundle · {notes.length} notes
-            </span>
+
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                {featured && (
+                  <Badge variant="default" className="gap-1">
+                    <Sparkles className="size-3" /> Featured
+                  </Badge>
+                )}
+                <span className="text-xs font-medium uppercase tracking-wider text-primary">
+                  Bundle · {notes.length} notes
+                </span>
+              </div>
+              <h3 id={`bundle-${id}`} className="mt-1.5 text-pretty text-lg font-semibold leading-snug tracking-tight">
+                {title}
+              </h3>
+              {description && (
+                <p className="mt-1.5 line-clamp-3 max-w-2xl text-sm leading-relaxed text-muted-foreground">{description}</p>
+              )}
+            </div>
           </div>
-          <h3 id={`bundle-${id}`} className="mt-1.5 text-pretty text-lg font-semibold leading-snug tracking-tight">
-            {title}
-          </h3>
-          {description && (
-            <p className="mt-1.5 line-clamp-3 max-w-2xl text-sm leading-relaxed text-muted-foreground">{description}</p>
-          )}
 
           {ownedCount > 0 && !allOwned && (
             <p className="mt-3 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
@@ -105,21 +126,21 @@ export function BundleCard({
           )}
         </div>
 
-        <div className={cn('flex shrink-0 flex-row items-end justify-between gap-4', !preview && 'sm:w-48 sm:flex-col sm:items-end sm:justify-center')}>
-          <div className={cn(!preview && 'sm:text-right')}>
+        <div className={cn('flex shrink-0 flex-col gap-3', wide('sm:w-48 sm:items-end sm:justify-center'))}>
+          <div className={cn('flex items-end justify-between gap-3', wide('sm:flex-col sm:items-end sm:gap-0.5'))}>
             <p className="text-2xl font-semibold tabular-nums tracking-tight">{formatInr(priceMinor)}</p>
             {savings ? (
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                <span className="font-medium text-success">Save {formatInr(savings.savingsMinor)}</span> · the notes
-                cost {formatInr(savings.separateMinor)} separately
+              <p className="text-right text-xs leading-snug text-muted-foreground">
+                <span className="font-medium text-success">Save {formatInr(savings.savingsMinor)}</span>
+                <span className="block">the notes cost {formatInr(savings.separateMinor)} separately</span>
               </p>
             ) : (
-              <p className="mt-0.5 text-xs text-muted-foreground">One payment, yours to keep</p>
+              <p className="text-right text-xs leading-snug text-muted-foreground">One payment, yours to keep</p>
             )}
           </div>
 
           {allOwned ? (
-            <Badge variant="success" className="px-3 py-1.5 text-xs">
+            <Badge variant="success" className="justify-center px-3 py-1.5 text-xs">
               You own all of it
             </Badge>
           ) : (
@@ -134,7 +155,7 @@ export function BundleCard({
               openHref="/account/purchases"
               openLabel="See what’s included"
               size="lg"
-              className={cn('w-full', !preview && 'sm:w-auto')}
+              className={cn('w-full', wide('sm:w-auto'))}
             />
           )}
         </div>

@@ -285,3 +285,26 @@ export async function subjectProgram(subjectId: string): Promise<Program | null>
   });
   return subject?.semester.program ?? null;
 }
+
+/**
+ * Whether another unit in the same subject already has this name.
+ *
+ * A subject's unit names are unique (the database enforces it exactly); this check ignores case
+ * as well, so "unit 1" and "Unit 1" are not allowed to sit side by side looking like a mistake.
+ * `exceptUnitId` is the unit being renamed, which of course may keep its own name.
+ */
+export async function unitNameTaken(
+  subjectId: string,
+  name: string,
+  exceptUnitId?: string,
+): Promise<boolean> {
+  const clash = await prisma.unit.findFirst({
+    where: {
+      subjectId,
+      name: { equals: name, mode: 'insensitive' },
+      ...(exceptUnitId ? { id: { not: exceptUnitId } } : {}),
+    },
+    select: { id: true },
+  });
+  return clash !== null;
+}

@@ -1006,22 +1006,38 @@ model PurchaseGrant {
   @@map("purchase_grants")
 }
 
+/// Where a bundle's cover picture comes from.
+enum BundleCoverMode {
+  /// A subject's notebook cover: the chosen one, else the first promoted subject's.
+  SUBJECT
+  /// An image uploaded for this bundle.
+  CUSTOM
+  /// No picture at all; the card is text only.
+  NONE
+}
+
 /// A set of notes sold together at one price the admin chooses.
 model Bundle {
-  id             String   @id @default(cuid())
-  title          String
-  description    String?
-  priceMinor     Int
-  currency       String   @default("INR")
-  isActive       Boolean  @default(false)
-  isFeatured     Boolean  @default(false)
-  position       Int      @default(0)
-  /// The cover is chosen from an existing subject's notebook cover, so no new
-  /// upload system is needed. Null falls back to the first promoted subject's.
-  coverSubjectId String?
-  createdById    String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id              String          @id @default(cuid())
+  title           String
+  description     String?
+  priceMinor      Int
+  currency        String          @default("INR")
+  isActive        Boolean         @default(false)
+  isFeatured      Boolean         @default(false)
+  position        Int             @default(0)
+  coverMode       BundleCoverMode @default(SUBJECT)
+  /// With `coverMode = SUBJECT`: which subject's notebook cover to borrow. Null falls back to the
+  /// first promoted subject's.
+  coverSubjectId  String?
+  /// With `coverMode = CUSTOM`: an opaque key in the same private storage the notes use, never a
+  /// public URL. Kept when the admin switches to another mode, so switching back needs no re-upload.
+  coverStorageKey String?
+  coverMimeType   String?
+  coverUpdatedAt  DateTime?
+  createdById     String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
   coverSubject Subject?        @relation("BundleCover", fields: [coverSubjectId], references: [id], onDelete: SetNull)
   createdBy    User?           @relation("BundleCreator", fields: [createdById], references: [id], onDelete: SetNull)

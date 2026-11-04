@@ -32,7 +32,14 @@ export interface BundleView {
   isActive: boolean;
   isFeatured: boolean;
   position: number;
+  /** The picture to show, or null. With `showCover` true and no picture, the card draws a placeholder. */
   cover: string | null;
+  /** False when the admin chose "no cover": the card is text only, not even a placeholder. */
+  showCover: boolean;
+  /** How the cover was chosen, for the admin editor. `cover` already reflects it. */
+  coverMode: 'SUBJECT' | 'CUSTOM' | 'NONE';
+  /** The uploaded image's URL, if there is one — kept even while another mode is chosen. */
+  customCover: string | null;
   notes: BundleNoteView[];
   subjectIds: string[];
   /** Notes in the bundle the viewer already holds (never charged for twice in spirit — see the notice). */
@@ -51,6 +58,9 @@ const bundleSelect = {
   isActive: true,
   isFeatured: true,
   position: true,
+  coverMode: true,
+  coverStorageKey: true,
+  coverUpdatedAt: true,
   coverSubject: { select: { id: true, coverStorageKey: true, coverUpdatedAt: true } },
   subjects: {
     select: {
@@ -85,6 +95,14 @@ function loadRaw(where: Prisma.BundleWhereInput) {
     select: bundleSelect,
     orderBy: [{ isFeatured: 'desc' }, { position: 'asc' }, { createdAt: 'asc' }],
   });
+}
+
+/**
+ * Where a bundle's own uploaded cover is served from. The `v` stamp changes when the image is
+ * replaced, which is what makes the long cache on that route safe.
+ */
+export function bundleCoverUrl(bundleId: string, updatedAt: Date | null): string {
+  return `/api/bundles/${bundleId}/cover?v=${updatedAt ? updatedAt.getTime() : 0}`;
 }
 
 /** Why a bundle cannot be sold right now, or null. */
@@ -124,6 +142,10 @@ async function shape(raw: RawBundle[], viewerId: string | null): Promise<BundleV
     }));
     const ownedCount = notes.filter((note) => note.owned).length;
     const coverSource = bundle.coverSubject ?? bundle.subjects[0]?.subject ?? null;
+    const customCover = bundle.coverStorageKey ? bundleCoverUrl(bundle.id, bundle.coverUpdatedAt) : null;
+    const subjectCover = coverSource
+      ? coverUrl(coverSource.id, coverSource.coverStorageKey, coverSource.coverUpdatedAt)
+      : null;
     return {
       id: bundle.id,
       title: bundle.title,
@@ -132,7 +154,10 @@ async function shape(raw: RawBundle[], viewerId: string | null): Promise<BundleV
       isActive: bundle.isActive,
       isFeatured: bundle.isFeatured,
       position: bundle.position,
-      cover: coverSource ? coverUrl(coverSource.id, coverSource.coverStorageKey, coverSource.coverUpdatedAt) : null,
+      cover: bundle.coverMode === 'NONE' ? null : bundle.coverMode === 'CUSTOM' ? customCover : subjectCover,
+      showCover: bundle.coverMode !== 'NONE',
+      coverMode: bundle.coverMode,
+      customCover,
       notes,
       subjectIds: bundle.subjects.map((row) => row.subjectId),
       ownedCount,

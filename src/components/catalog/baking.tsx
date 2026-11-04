@@ -115,7 +115,9 @@ export function NotifyMeButton({
           : `Notify me when ${unitLabel} is ready`
       }
       className={cn(
-        'relative z-10 inline-flex min-w-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5',
+        // Never shrinks: on a narrow phone the row wraps instead (see `UnitRow`), so the label
+        // is always whole rather than cut to "Notif…".
+        'relative z-10 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1.5 coarse:min-h-11',
         'text-xs font-medium transition-colors',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
         'disabled:opacity-60',
@@ -131,7 +133,7 @@ export function NotifyMeButton({
       ) : (
         <Bell aria-hidden className="size-3.5 shrink-0" />
       )}
-      <span className="truncate">{subscribed ? "You'll be notified" : 'Notify me'}</span>
+      <span>{subscribed ? "You'll be notified" : 'Notify me'}</span>
     </button>
   );
 }

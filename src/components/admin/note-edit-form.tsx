@@ -24,9 +24,9 @@ interface Props {
  *
  * Uploading is subject → unit → PDF and nothing else; this screen is where an
  * existing note is corrected — moved to a different unit, taken off the
- * catalogue, repriced. The title is still editable because notes filed under the
- * older model carry their own, but a note that lives in a unit is named after
- * that unit and normally needs no attention here.
+ * catalogue, repriced. A note that lives in a unit is named after that unit, so
+ * its title field is the unit's name here: renaming it renames the unit too. A
+ * note filed under the older model, with no unit, carries a title of its own.
  */
 export function NoteEditForm({ noteId, catalog, initial }: Props) {
   const [subjectId, setSubjectId] = useState(initial.subjectId);
@@ -58,8 +58,16 @@ export function NoteEditForm({ noteId, catalog, initial }: Props) {
 
   return (
     <ActionForm action={updateNoteAction.bind(null, noteId)} submitLabel="Save changes">
-      <Field label="Title" htmlFor="title">
-        <Input id="title" name="title" defaultValue={initial.title} required />
+      <Field
+        label={unitId ? 'Unit name' : 'Title'}
+        htmlFor="title"
+        hint={
+          unitId
+            ? 'This note lives in a unit, so this is also the unit’s name. Renaming it renames the unit for students.'
+            : undefined
+        }
+      >
+        <Input id="title" name="title" defaultValue={initial.title} required maxLength={unitId ? 120 : 160} />
       </Field>
 
       <Field label="Description" htmlFor="description">

@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { env } from '@/lib/env';
 import { Errors, toErrorResponse } from '@/lib/errors';
 import { requireApiAdmin } from '@/lib/auth/guards';
+import { bundleCoverOwner } from '@/lib/storage/cover-upload';
 import {
   buildCoverKey,
   buildNoteKey,
@@ -32,9 +33,10 @@ export async function POST(request: NextRequest) {
       fileName?: string;
       contentType?: string;
       size?: number;
-      /** "note" (a PDF: a note or a PYQ) or "cover" (a subject notebook image). */
+      /** "note" (a PDF: a note or a PYQ) or "cover" (a subject's or a bundle's image). */
       kind?: string;
       subjectId?: string;
+      bundleId?: string;
     };
 
     const kind = body.kind === 'cover' ? 'cover' : 'note';
@@ -49,12 +51,14 @@ export async function POST(request: NextRequest) {
       if (!isCoverMimeType(contentType)) {
         throw Errors.validation('Covers must be a JPG, PNG or WebP image.');
       }
-      if (!body.subjectId) throw Errors.validation('A cover needs a subject.');
+      // Folders match what the cover routes accept: `covers/<subject id>/` and `covers/bundle-<id>/`.
+      const ownerId = body.bundleId ? bundleCoverOwner(body.bundleId) : body.subjectId;
+      if (!ownerId) throw Errors.validation('A cover needs a subject or a bundle.');
       maxBytes = MAX_COVER_BYTES;
       if (typeof body.size === 'number' && body.size > maxBytes) {
         throw Errors.validation('Cover images must be 5 MB or smaller.');
       }
-      key = buildCoverKey(body.subjectId, contentType);
+      key = buildCoverKey(ownerId, contentType);
     } else {
       if (!env.uploads.allowedMimeTypes.includes(contentType as 'application/pdf')) {
         throw Errors.validation('Only PDF files are supported right now.');

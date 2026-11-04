@@ -1,8 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/prisma';
+import type { BundleCoverMode } from '@/generated/prisma/client';
 import { Errors, toActionError } from '@/lib/errors';
 import { requireApiAdmin } from '@/lib/auth/guards';
 import { requestContext } from '@/lib/request';
@@ -30,6 +30,12 @@ function text(form: FormData, key: string): string {
 function flag(form: FormData, key: string): boolean {
   const raw = form.get(key);
   return raw === 'on' || raw === 'true' || raw === '1';
+}
+
+/** The cover option the form posted, or undefined when it did not post one (older callers). */
+function coverMode(form: FormData): BundleCoverMode | undefined {
+  const raw = text(form, 'coverMode');
+  return raw === 'SUBJECT' || raw === 'CUSTOM' || raw === 'NONE' ? raw : undefined;
 }
 
 function list(form: FormData, key: string): string[] {
@@ -70,7 +76,6 @@ export async function setNoteAccessAction(noteId: string, form: FormData): Promi
 
 /** Creates an empty, inactive bundle with a title and a price, then opens it for editing. */
 export async function createBundleAction(form: FormData): Promise<ActionResult> {
-  let createdId: string;
   try {
     const { user: admin } = await requireApiAdmin();
     const created = await createBundle({
@@ -79,12 +84,11 @@ export async function createBundleAction(form: FormData): Promise<ActionResult> 
       actor: { id: admin.id, email: admin.email },
       ctx: await requestContext(),
     });
-    createdId = created.id;
     revalidatePath('/admin/bundles');
+    return { ok: true, message: 'Bundle created.', redirectTo: `/admin/bundles/${created.id}` };
   } catch (error) {
     return toActionError(error);
   }
-  redirect(`/admin/bundles/${createdId}`);
 }
 
 /** Saves a bundle: its text, price, notes, promoted subjects, cover and visibility. */
@@ -102,6 +106,7 @@ export async function saveBundleAction(bundleId: string, form: FormData): Promis
       noteIds: list(form, 'noteIds'),
       subjectIds: list(form, 'subjectIds'),
       coverSubjectId: text(form, 'coverSubjectId') || null,
+      coverMode: coverMode(form),
       actor: { id: admin.id, email: admin.email },
       ctx: await requestContext(),
     });
@@ -120,10 +125,10 @@ export async function deleteBundleAction(bundleId: string): Promise<ActionResult
     const { user: admin } = await requireApiAdmin();
     await deleteBundle({ bundleId, actor: { id: admin.id, email: admin.email }, ctx: await requestContext() });
     revalidatePath('/admin/bundles');
+    return { ok: true, message: 'Bundle deleted.', redirectTo: '/admin/bundles' };
   } catch (error) {
     return toActionError(error);
   }
-  redirect('/admin/bundles');
 }
 
 // ---------------------------------------------------------------------------

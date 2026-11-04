@@ -8,6 +8,7 @@ import { requestContext } from '@/lib/request';
 import { recordEvent } from '@/lib/analytics/events';
 import { writeAudit } from '@/lib/audit';
 import { firstError, semesterSchema, subjectSchema, topicSchema, unitSchema } from '@/lib/validation';
+import { unitNameTaken } from '@/lib/admin/catalog';
 import { DEFAULT_PROGRAM, parseProgram, programLabel } from '@/lib/program';
 import { slugify } from '@/lib/utils';
 import type { ActionResult } from '@/app/admin/_actions/users';
@@ -344,6 +345,68 @@ export async function createUnitAction(form: FormData): Promise<ActionResult> {
     revalidatePath('/admin/notes');
     revalidatePath('/');
     return { ok: true, message: `${unit.name} added.` };
+  } catch (error) {
+    return toActionError(error);
+  }
+}
+
+/**
+ * Renames a unit (and edits its description).
+ *
+ * A unit's name is what students see on the subject page, in the reader and in "My purchases", so
+ * it is the one place a rename has to land. The PDF in the unit is titled after the unit, so its
+ * title follows in the same transaction — the two can never disagree.
+ */
+export async function updateUnitAction(id: string, form: FormData): Promise<ActionResult> {
+  try {
+    const { user: admin } = await requireApiAdmin();
+    const ctx = await requestContext();
+
+    const unit = await prisma.unit.findUnique({
+      where: { id },
+      select: { id: true, name: true, description: true, subjectId: true, notes: { select: { id: true } } },
+    });
+    if (!unit) throw Errors.notFound('That unit no longer exists.');
+
+    const parsed = unitSchema.safeParse({
+      subjectId: unit.subjectId,
+      name: value(form, 'name'),
+      description: value(form, 'description'),
+    });
+    if (!parsed.success) throw Errors.validation(firstError(parsed.error));
+    const { name } = parsed.data;
+    const description = parsed.data.description || null;
+
+    if (name === unit.name && description === unit.description) {
+      return { ok: true, message: 'Nothing to change.' };
+    }
+    if (name !== unit.name && (await unitNameTaken(unit.subjectId, name, unit.id))) {
+      throw Errors.conflict('Another unit in this subject already has that name.');
+    }
+
+    await prisma.$transaction([
+      prisma.unit.update({ where: { id }, data: { name, description } }),
+      // A note filed in this unit is named after it; keep them in step.
+      prisma.note.updateMany({ where: { unitId: id }, data: { title: name } }),
+    ]);
+
+    await writeAudit({
+      action: 'UNIT_UPDATED',
+      actorId: admin.id,
+      actorEmail: admin.email,
+      targetType: 'unit',
+      targetId: id,
+      targetLabel: name,
+      metadata: name !== unit.name ? { renamedFrom: unit.name } : undefined,
+      ctx,
+    });
+
+    revalidatePath('/admin/notes');
+    revalidatePath('/');
+    revalidatePath('/catalog');
+    revalidatePath('/subject', 'layout');
+    for (const note of unit.notes) revalidatePath(`/admin/notes/${note.id}`);
+    return { ok: true, message: name !== unit.name ? `Renamed to “${name}”.` : 'Saved.' };
   } catch (error) {
     return toActionError(error);
   }

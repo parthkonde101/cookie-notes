@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
-export type ActionResult = { ok: true; message?: string } | { ok: false; error: string };
+export type ActionResult = { ok: true; message?: string; redirectTo?: string } | { ok: false; error: string };
 
 interface ActionButtonProps extends Omit<ButtonProps, 'onClick' | 'formAction'> {
   action: () => Promise<ActionResult>;
@@ -39,7 +39,8 @@ export function ActionButton({ action, confirm, children, ...props }: ActionButt
         const result = await action();
         if (result.ok) {
           toast.success(result.message ?? 'Done.');
-          router.refresh();
+          if (result.redirectTo) router.push(result.redirectTo);
+          else router.refresh();
         } else {
           toast.error(result.error);
         }

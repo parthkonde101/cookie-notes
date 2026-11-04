@@ -9,7 +9,7 @@ import { storage } from '@/lib/storage/index';
 import { recordEvent } from '@/lib/analytics/events';
 import { writeAudit } from '@/lib/audit';
 import { firstError, noteMetadataSchema } from '@/lib/validation';
-import { subjectProgram } from '@/lib/admin/catalog';
+import { subjectProgram, unitNameTaken } from '@/lib/admin/catalog';
 import { assertNoteDeletable } from '@/lib/commerce/admin';
 import { programLabel } from '@/lib/program';
 import type { ActionResult } from '@/app/admin/_actions/users';
@@ -76,12 +76,14 @@ export async function updateNoteAction(noteId: string, form: FormData): Promise<
       }
     }
 
+    let targetUnitName: string | null = null;
     if (meta.unitId) {
       const unit = await prisma.unit.findFirst({
         where: { id: meta.unitId, subjectId: meta.subjectId },
         select: { id: true, name: true, notes: { select: { id: true }, take: 1 } },
       });
       if (!unit) throw Errors.validation('That unit does not belong to the selected subject.');
+      targetUnitName = unit.name;
 
       // One unit, one PDF. Caught here so the admin gets a sentence rather than
       // a unique-constraint error from the database.
@@ -101,13 +103,45 @@ export async function updateNoteAction(noteId: string, form: FormData): Promise<
       if (!topic) throw Errors.validation('That topic does not belong to the selected unit.');
     }
 
+    /*
+     * A note that lives in a unit is named after that unit, and the unit's name is what students
+     * see. So on this screen the Title of such a note IS the unit's name: changing it renames the
+     * unit as well as the note. (It used to change only the note, which is why renaming here
+     * appeared to do nothing.)
+     *
+     * Moving a note into a different unit gives it that unit's name. Renaming and moving in one
+     * save would make one of the two edits silently disappear, so that combination is refused.
+     */
+    let title = meta.title;
+    let renameUnit: { id: string; from: string } | null = null;
+    if (meta.unitId && targetUnitName !== null) {
+      if (meta.unitId === existing.unitId) {
+        if (title !== targetUnitName) {
+          if (title.length > 120) throw Errors.validation('A unit name can be 120 characters at most.');
+          if (await unitNameTaken(meta.subjectId, title, meta.unitId)) {
+            throw Errors.conflict('Another unit in this subject already has that name.');
+          }
+          renameUnit = { id: meta.unitId, from: targetUnitName };
+        }
+      } else {
+        const previousUnit = existing.unitId
+          ? await prisma.unit.findUnique({ where: { id: existing.unitId }, select: { name: true } })
+          : null;
+        const untouched = title === existing.title || title === previousUnit?.name;
+        if (!untouched) {
+          throw Errors.validation('Save the new name first, then move the note — doing both at once would lose one.');
+        }
+        title = targetUnitName;
+      }
+    }
+
     const becamePublished = existing.status !== 'PUBLISHED' && meta.status === 'PUBLISHED';
     const becameArchived = existing.status !== 'ARCHIVED' && meta.status === 'ARCHIVED';
 
-    await prisma.note.update({
+    const noteUpdate = prisma.note.update({
       where: { id: noteId },
       data: {
-        title: meta.title,
+        title,
         description: meta.description || null,
         subjectId: meta.subjectId,
         unitId: meta.unitId || null,
@@ -120,6 +154,24 @@ export async function updateNoteAction(noteId: string, form: FormData): Promise<
         archivedAt: becameArchived ? new Date() : meta.status === 'ARCHIVED' ? existing.archivedAt : null,
       },
     });
+    if (renameUnit) {
+      await prisma.$transaction([
+        prisma.unit.update({ where: { id: renameUnit.id }, data: { name: title } }),
+        noteUpdate,
+      ]);
+      await writeAudit({
+        action: 'UNIT_UPDATED',
+        actorId: admin.id,
+        actorEmail: admin.email,
+        targetType: 'unit',
+        targetId: renameUnit.id,
+        targetLabel: title,
+        metadata: { renamedFrom: renameUnit.from },
+        ctx,
+      });
+    } else {
+      await noteUpdate;
+    }
 
     await writeAudit({
       action: becamePublished ? 'NOTE_PUBLISHED' : becameArchived ? 'NOTE_ARCHIVED' : 'NOTE_UPDATED',
@@ -127,7 +179,7 @@ export async function updateNoteAction(noteId: string, form: FormData): Promise<
       actorEmail: admin.email,
       targetType: 'note',
       targetId: noteId,
-      targetLabel: meta.title,
+      targetLabel: title,
       metadata: { status: meta.status },
       ctx,
     });
@@ -136,7 +188,11 @@ export async function updateNoteAction(noteId: string, form: FormData): Promise<
     revalidatePath('/admin/notes');
     revalidatePath(`/admin/notes/${noteId}`);
     revalidatePath('/');
-    return { ok: true, message: 'Saved.' };
+    if (renameUnit) {
+      revalidatePath('/catalog');
+      revalidatePath('/subject', 'layout');
+    }
+    return { ok: true, message: renameUnit ? `Unit renamed to “${title}”.` : 'Saved.' };
   } catch (error) {
     return toActionError(error);
   }
