@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Cookie } from 'lucide-react';
+import { LogoMark } from '@/components/brand/logo';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/feedback';
 import { ThankYouCard } from '@/components/feedback/thank-you-card';
@@ -278,7 +278,7 @@ export function FeedbackLetter({ name }: { name: string }) {
               transform: `translate(-50%, -50%) scale(${flapClosed ? 1 : 0.4})`,
             }}
           >
-            <Cookie className="size-5" />
+            <LogoMark small className="size-7" />
           </span>
         </div>
       )}

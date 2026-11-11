@@ -21,7 +21,6 @@ export const metadata: Metadata = {
   },
   description: 'Cookie Notes. Baked for exams.',
   robots: { index: false, follow: false },
-  icons: { icon: '/favicon.svg' },
 };
 
 export const viewport: Viewport = {

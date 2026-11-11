@@ -6,7 +6,6 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   BookOpen,
   ClipboardList,
-  Cookie,
   FileText,
   LayoutDashboard,
   LogOut,
@@ -20,6 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { LogoMark } from '@/components/brand/logo';
 import { cn, initials } from '@/lib/utils';
 
 /**
@@ -82,9 +82,7 @@ export function AdminShell({
   const sidebar = (
     <div className="flex h-full flex-col gap-1 px-3 py-4">
       <Link href="/admin" className="mb-5 flex items-center gap-2.5 px-2">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/12 text-primary ring-1 ring-inset ring-primary/25">
-          <Cookie className="size-4" />
-        </span>
+        <LogoMark className="size-9 text-primary" />
         <span className="min-w-0">
           <span className="block truncate text-sm font-semibold tracking-tight">Cookie Notes</span>
           <span className="block text-[11px] font-medium uppercase tracking-wider text-primary">
@@ -188,7 +186,7 @@ export function AdminShell({
             <Menu className="size-5" />
           </button>
           <Link href="/admin" className="flex items-center gap-2">
-            <Cookie className="size-4 text-primary" />
+            <LogoMark small className="size-7 text-primary" />
             <span className="text-sm font-semibold">Cookie Notes</span>
             <span className="text-[11px] uppercase tracking-wider text-primary">Admin</span>
           </Link>

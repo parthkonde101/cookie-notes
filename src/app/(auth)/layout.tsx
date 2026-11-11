@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Cookie } from 'lucide-react';
+import { LogoMark } from '@/components/brand/logo';
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -11,9 +11,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
 
       <header className="relative z-10 px-6 py-6">
         <Link href="/" className="inline-flex items-center gap-2">
-          <div className="flex size-8 items-center justify-center rounded-md bg-primary/15 text-primary">
-            <Cookie className="size-4" />
-          </div>
+          <LogoMark className="size-9 text-primary" />
           <span className="text-sm font-semibold tracking-tight">Cookie Notes</span>
         </Link>
       </header>

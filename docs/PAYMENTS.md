@@ -95,8 +95,8 @@ installed there. Do not add a custom UPI block (`config.display.blocks`) on top:
 makes UPI appear twice. To change the order of methods, use the Razorpay Dashboard's payment
 configuration instead of code.
 
-The logo in the Checkout window is `public/checkout-logo.png` (512×512, rendered from
-`public/favicon.svg`); Checkout loads it from `<site origin>/checkout-logo.png`, so it must stay
+The logo in the Checkout window is `public/checkout-logo.png` (512×512, a copy of the
+app icon in the logo kit, `brand/cookie-notes-logo/app/icon-512.png`); Checkout loads it from `<site origin>/checkout-logo.png`, so it must stay
 publicly reachable. On a Preview with Deployment Protection on, that address redirects to a
 Vercel sign-in, so the logo may appear as the default letter there but shows on the real site.
 

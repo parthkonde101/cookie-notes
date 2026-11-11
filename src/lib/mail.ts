@@ -208,7 +208,7 @@ export function verificationCodeEmail(name: string, code: string, minutes: numbe
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border:1px solid #e5ded4;border-radius:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
 
         <tr><td style="padding:24px 28px 0 28px;">
-          <span style="font-size:16px;font-weight:600;color:#8a5524;letter-spacing:-0.01em;">🍪 Cookie Notes</span>
+          ${emailBrand()}
         </td></tr>
 
         <tr><td style="padding:18px 28px 0 28px;">
@@ -300,7 +300,7 @@ export function noteReadyEmail(input: NoteReadyEmailInput): MailMessage {
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border:1px solid #e5ded4;border-radius:12px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
 
         <tr><td style="padding:24px 28px 0 28px;">
-          <span style="font-size:16px;font-weight:600;color:#8a5524;letter-spacing:-0.01em;">🍪 Cookie Notes</span>
+          ${emailBrand()}
         </td></tr>
 
         <tr><td style="padding:20px 28px 0 28px;">
@@ -344,6 +344,21 @@ function escapeHtml(value: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+/**
+ * The mark and wordmark at the top of every email.
+ *
+ * The mark is a PNG on the site itself (public/brand), referenced by absolute address because
+ * mail clients cannot load an SVG or a relative path. Its alt text is empty on purpose: the words
+ * "Cookie Notes" sit right beside it, so a client that blocks images still shows the name and a
+ * screen reader does not read it twice.
+ */
+function emailBrand(): string {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;"><tr>
+            <td style="padding:0 8px 0 0;vertical-align:middle;"><img src="${escapeHtml(env.appUrl)}/brand/cookie-mark-deep-128.png" width="28" height="28" alt="" style="display:block;border:0;outline:none;"></td>
+            <td style="vertical-align:middle;"><span style="font-size:16px;font-weight:600;color:#8a5524;letter-spacing:-0.01em;">Cookie Notes</span></td>
+          </tr></table>`;
 }
 
 /** Same as above; kept separate so the intent at each call site is obvious. */

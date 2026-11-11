@@ -3,7 +3,8 @@
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Cookie, Loader2, MonitorSmartphone } from 'lucide-react';
+import { Loader2, MonitorSmartphone } from 'lucide-react';
+import { LogoMark } from '@/components/brand/logo';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PasswordInput } from '@/components/ui/password-input';
@@ -192,9 +193,7 @@ export function AuthModalProvider({
           ) : (
             <>
               <DialogHeader>
-                <div className="mb-1 flex size-9 items-center justify-center rounded-full bg-primary/12 text-primary">
-                  <Cookie className="size-4" />
-                </div>
+                <LogoMark className="mb-1 size-10 text-primary" />
                 <DialogTitle>{mode === 'signin' ? 'Sign in' : 'Create account'}</DialogTitle>
               </DialogHeader>
 

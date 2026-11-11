@@ -1,4 +1,4 @@
-import { Cookie } from 'lucide-react';
+import { LogoMark } from '@/components/brand/logo';
 
 const PARAGRAPHS = [
   'In my second year of B.Tech, I started taking my notes digitally because I preferred having everything in one place. As the class CR, I began sharing them with my classmates during exams, and they soon became a primary source for preparation.',
@@ -25,12 +25,7 @@ export function StorySection() {
         </div>
 
         <p className="mt-12 flex items-center gap-4 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-          <span
-            aria-hidden
-            className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md"
-          >
-            <Cookie className="size-5" />
-          </span>
+          <LogoMark className="size-12 text-primary" />
           {"That's where Cookie Notes began."}
         </p>
       </div>

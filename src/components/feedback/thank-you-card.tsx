@@ -1,4 +1,4 @@
-import { Cookie } from 'lucide-react';
+import { LogoMark } from '@/components/brand/logo';
 
 /**
  * The sheet the letter reveals once it's sent. Deliberately quiet — no
@@ -14,9 +14,7 @@ export function ThankYouCard({
 }) {
   return (
     <div className="flex min-h-[22rem] flex-col items-center justify-center rounded-xl border border-border bg-card px-6 py-14 text-center sm:min-h-[26rem]">
-      <span className="flex size-11 items-center justify-center rounded-full bg-primary/12 text-primary ring-1 ring-inset ring-primary/25">
-        <Cookie className="size-5" />
-      </span>
+      <LogoMark className="size-14 text-primary" />
       <h2
         ref={headingRef}
         tabIndex={-1}

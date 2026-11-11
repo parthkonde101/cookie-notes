@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { ChevronDown, Cookie, LogOut, Menu, Shield, UserRound, X } from 'lucide-react';
+import { ChevronDown, LogOut, Menu, Shield, UserRound, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { LogoMark } from '@/components/brand/logo';
 import { useAuthModal } from '@/components/auth/auth-modal';
 import { useVerificationGate } from '@/components/auth/verification-gate';
 import { cn, initials } from '@/lib/utils';
@@ -117,9 +118,7 @@ export function SiteHeader({ user, liveUsers }: { user: HeaderUser | null; liveU
             way on a narrow phone — the mark stays, the wordmark truncates. That
             is what keeps the header from pushing the page sideways at 320px. */}
         <Link href="/" className="flex min-w-0 items-center gap-2.5 coarse:min-h-11">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/12 text-primary ring-1 ring-inset ring-primary/25">
-            <Cookie className="size-4" />
-          </span>
+          <LogoMark className="size-9 text-primary" />
           <span className="truncate text-[0.95rem] font-semibold tracking-tight">Cookie Notes</span>
         </Link>
 
