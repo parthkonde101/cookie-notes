@@ -19,7 +19,9 @@ export const metadata: Metadata = {
     default: 'Cookie Notes — baked for exams',
     template: '%s · Cookie Notes',
   },
-  description: 'Cookie Notes. Baked for exams.',
+  // Shown under the title in link previews (WhatsApp, Slack, search). The title already carries the
+  // name and the slogan, so this says something new instead of repeating them.
+  description: 'Handwritten notes you need',
   robots: { index: false, follow: false },
 };
 

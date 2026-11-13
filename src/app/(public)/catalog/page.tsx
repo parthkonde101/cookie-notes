@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { CatalogueScreen } from '@/components/catalog/catalogue-screen';
 
 export const metadata: Metadata = {
-  title: 'Cookie Notes — baked for exams',
+  title: 'Catalog',
 };
 export const dynamic = 'force-dynamic';
 

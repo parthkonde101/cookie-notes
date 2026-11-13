@@ -4,7 +4,7 @@ import { redirect } from 'next/navigation';
 import { EMAIL_MIGRATION_PATH, needsEmailMigration, requireUser } from '@/lib/auth/guards';
 
 export const metadata: Metadata = {
-  title: 'Feedback — Cookie Notes',
+  title: 'Feedback',
 };
 export const dynamic = 'force-dynamic';
 

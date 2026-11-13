@@ -1,12 +1,10 @@
-import type { Metadata } from 'next';
 import { CatalogueScreen } from '@/components/catalog/catalogue-screen';
 import { HomeIntro } from '@/components/home/home-intro';
 import { optionalUser } from '@/lib/auth/guards';
 import { trackPageView } from '@/lib/analytics/page-views';
 
-export const metadata: Metadata = {
-  title: 'Cookie Notes — baked for exams',
-};
+// No page title on purpose: the site's default title (app/layout.tsx) is exactly this page's title,
+// and giving it again would run it through the "%s · Cookie Notes" template and print the name twice.
 export const dynamic = 'force-dynamic';
 
 /**

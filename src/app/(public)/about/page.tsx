@@ -3,7 +3,7 @@ import { FounderSection } from '@/components/about/founder-section';
 import { StorySection } from '@/components/about/story-section';
 
 export const metadata: Metadata = {
-  title: 'About — Cookie Notes',
+  title: 'About',
   description: 'Why Cookie Notes exists, how it began, and who is building it.',
 };
 
